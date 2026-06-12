@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import os
 from datetime import date
@@ -11,9 +12,9 @@ from typing import Any, Dict, Iterable, Mapping
 import streamlit as st
 
 from src import lingxing_client
+from src import metrics
 from src.config import load_targets
 from src.date_windows import PRESETS, DateWindow, resolve_date_window, today_for_timezone
-from src.metrics import build_dashboard_summary
 
 
 st.set_page_config(
@@ -84,6 +85,108 @@ def create_lingxing_client(server_url: str, asin: str, transport: str) -> Any:
             raise
 
 
+def fetch_dashboard_with_reload(
+    *,
+    server_url: str,
+    asin: str,
+    transport: str,
+    start_date: str,
+    end_date: str,
+    sp_campaign_ids: tuple[str, ...],
+    known_non_sp_campaign_ids: tuple[str, ...],
+) -> Dict[str, Any]:
+    client = create_lingxing_client(server_url=server_url, asin=asin, transport=transport)
+    try:
+        return client.fetch_dashboard(
+            start_date=start_date,
+            end_date=end_date,
+            sp_campaign_ids=sp_campaign_ids,
+            known_non_sp_campaign_ids=known_non_sp_campaign_ids,
+        )
+    except TypeError as exc:
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        importlib.invalidate_caches()
+        refreshed = importlib.reload(lingxing_client)
+        client = refreshed.LingxingClient(
+            server_url=server_url,
+            asin=asin,
+            transport=transport,
+        )
+        return client.fetch_dashboard(
+            start_date=start_date,
+            end_date=end_date,
+            sp_campaign_ids=sp_campaign_ids,
+            known_non_sp_campaign_ids=known_non_sp_campaign_ids,
+        )
+
+
+def build_summary_with_reload(
+    *,
+    total_sales: float,
+    total_orders: float,
+    total_units: float,
+    ad_summary: Mapping[str, Mapping[str, Any]],
+    targets: Mapping[str, Any],
+    window_days: int,
+) -> Dict[str, object]:
+    try:
+        return metrics.build_dashboard_summary(
+            total_sales=total_sales,
+            total_orders=total_orders,
+            total_units=total_units,
+            ad_summary=ad_summary,
+            targets=targets,
+            window_days=window_days,
+        )
+    except TypeError as exc:
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        importlib.invalidate_caches()
+        refreshed = importlib.reload(metrics)
+        return refreshed.build_dashboard_summary(
+            total_sales=total_sales,
+            total_orders=total_orders,
+            total_units=total_units,
+            ad_summary=ad_summary,
+            targets=targets,
+            window_days=window_days,
+        )
+
+
+def ensure_runtime_compatibility() -> None:
+    lingxing_params = inspect.signature(lingxing_client.LingxingClient.fetch_dashboard).parameters
+    metrics_params = inspect.signature(metrics.build_dashboard_summary).parameters
+    stale_parts = []
+    if "start_date" not in lingxing_params or "end_date" not in lingxing_params:
+        stale_parts.append("src.lingxing_client")
+    if "window_days" not in metrics_params:
+        stale_parts.append("src.metrics")
+    if not stale_parts:
+        return
+
+    importlib.invalidate_caches()
+    if "src.lingxing_client" in stale_parts:
+        importlib.reload(lingxing_client)
+    if "src.metrics" in stale_parts:
+        importlib.reload(metrics)
+
+    refreshed_lingxing_params = inspect.signature(lingxing_client.LingxingClient.fetch_dashboard).parameters
+    refreshed_metrics_params = inspect.signature(metrics.build_dashboard_summary).parameters
+    still_stale = []
+    if "start_date" not in refreshed_lingxing_params or "end_date" not in refreshed_lingxing_params:
+        still_stale.append("src.lingxing_client")
+    if "window_days" not in refreshed_metrics_params:
+        still_stale.append("src.metrics")
+    if still_stale:
+        st.error(
+            "The Streamlit process is running stale Python modules: "
+            + ", ".join(still_stale)
+            + ". Reboot the Streamlit app from Manage app, then rerun."
+        )
+        st.stop()
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def load_dashboard_data(
     force_refresh_key: int,
@@ -98,11 +201,10 @@ def load_dashboard_data(
     transport = secrets_get("LINGXING_MCP_TRANSPORT", "auto")
     if server_url:
         try:
-            return create_lingxing_client(
+            return fetch_dashboard_with_reload(
                 server_url=str(server_url),
                 asin=str(asin),
                 transport=str(transport),
-            ).fetch_dashboard(
                 start_date=start_date,
                 end_date=end_date,
                 sp_campaign_ids=sp_campaign_ids,
@@ -176,8 +278,11 @@ def render_header(targets: Mapping[str, Any]) -> DateWindow:
 
     cols = st.columns([1.4, 1, 1, 1])
     preset = cols[0].selectbox("Date Window", PRESETS, index=1)
-    custom_start = cols[1].date_input("Start Date", anchor, disabled=preset != "Custom")
-    custom_end = cols[2].date_input("End Date", anchor, disabled=preset != "Custom")
+    preview_window = resolve_date_window(preset, anchor_date=anchor)
+    start_default = date.fromisoformat(preview_window.start_date) if preset != "Custom" else anchor
+    end_default = date.fromisoformat(preview_window.end_date) if preset != "Custom" else anchor
+    custom_start = cols[1].date_input("Start Date", start_default, disabled=preset != "Custom")
+    custom_end = cols[2].date_input("End Date", end_default, disabled=preset != "Custom")
     if cols[3].button("Refresh Data", use_container_width=True):
         st.session_state.refresh_counter = st.session_state.get("refresh_counter", 0) + 1
         load_dashboard_data.clear()
@@ -455,6 +560,7 @@ def _safe_float(value: Any) -> float:
 
 def main() -> None:
     inject_css()
+    ensure_runtime_compatibility()
     targets = load_targets()
     if "refresh_counter" not in st.session_state:
         st.session_state.refresh_counter = 0
@@ -471,7 +577,7 @@ def main() -> None:
 
     render_source_status(data, window)
     currency = "$" if data["sales"].get("currency", "USD") == "USD" else ""
-    summary = build_dashboard_summary(
+    summary = build_summary_with_reload(
         total_sales=data["sales"]["total_sales"],
         total_orders=data["sales"]["total_orders"],
         total_units=data["sales"]["total_units"],
