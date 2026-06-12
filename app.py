@@ -55,11 +55,27 @@ def safe_text(value: Any, fallback: str = "-") -> str:
     return str(value)
 
 
+def offer_value(value: Any) -> str:
+    if value in (None, "", [], {}):
+        return "None"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    return str(value)
+
+
 def secrets_get(key: str, default: Any = None) -> Any:
     try:
         return st.secrets.get(key, default)
     except Exception:
         return os.environ.get(key, default)
+
+
+def app_version() -> str:
+    for key in ("STREAMLIT_GIT_COMMIT", "SOURCE_VERSION", "GIT_COMMIT", "COMMIT_SHA"):
+        value = os.environ.get(key)
+        if value:
+            return str(value)[:8]
+    return "local"
 
 
 def create_lingxing_client(server_url: str, asin: str, transport: str) -> Any:
@@ -162,19 +178,21 @@ def enrich_public_context(data: Dict[str, Any], targets: Mapping[str, Any]) -> D
     token = secrets_get("PANGOLINFO_API_TOKEN") or secrets_get("PANGOLIN_API_TOKEN")
     context = data.setdefault("context", {})
     warnings = data.setdefault("source_status", {}).setdefault("warnings", [])
+    core_keywords = [str(item) for item in targets.get("core_keywords", []) or [] if str(item).strip()]
+    if not core_keywords:
+        title = context.get("listing", {}).get("title") if isinstance(context.get("listing"), Mapping) else ""
+        core_keywords = _keywords_from_title(str(title), limit=6)
     if not enabled:
+        _set_public_context_status(context, "disabled", "Pangolin public context is disabled in targets config.", core_keywords)
         warnings.append("Pangolin public context is disabled in targets config.")
         return data
     if not token:
+        _set_public_context_status(context, "missing_token", "PANGOLINFO_API_TOKEN is not configured.", core_keywords)
         warnings.append("Pangolin public context skipped: PANGOLINFO_API_TOKEN is not configured.")
         return data
 
     asin = str(targets.get("asin") or data.get("asin") or lingxing_client.DEFAULT_ASIN)
     marketplace = str(targets.get("marketplace") or "US")
-    core_keywords = [str(item) for item in targets.get("core_keywords", []) or [] if str(item).strip()]
-    if not core_keywords:
-        title = context.get("listing", {}).get("title") if isinstance(context.get("listing"), Mapping) else ""
-        core_keywords = _keywords_from_title(str(title), limit=6)
     try:
         public = build_public_context(
             asin=asin,
@@ -187,11 +205,42 @@ def enrich_public_context(data: Dict[str, Any], targets: Mapping[str, Any]) -> D
             client=PangolinClient(api_token=str(token)),
         )
     except (PangolinError, RuntimeError, ValueError) as exc:
+        _set_public_context_status(context, "failed", f"{type(exc).__name__}: {exc}", core_keywords)
         warnings.append(f"Pangolin public context failed: {type(exc).__name__}: {exc}")
         return data
 
     context.update(public)
+    context["public_context_status"] = {
+        "status": "ok",
+        "message": "Pangolin public context loaded.",
+        "source": "pangolin",
+        "freshness": context.get("public_listing", {}).get("freshness"),
+    }
     return data
+
+
+def _set_public_context_status(context: Dict[str, Any], status: str, message: str, core_keywords: Iterable[str]) -> None:
+    context["public_context_status"] = {
+        "status": status,
+        "message": message,
+        "source": "pangolin",
+        "freshness": None,
+    }
+    if not context.get("core_keywords"):
+        context["core_keywords"] = [
+            {
+                "keyword": keyword,
+                "tier": "configured_core" if idx < 3 else "configured_secondary",
+                "rank_status": "not_checked",
+                "own_organic_rank": None,
+                "own_ad_rank": None,
+                "source": "config/targets.yaml",
+                "freshness": None,
+                "confidence": "configured",
+                "missing_fields": ["pangolin_public_context"],
+            }
+            for idx, keyword in enumerate(core_keywords)
+        ]
 
 
 def _keywords_from_title(title: str, *, limit: int) -> list[str]:
@@ -332,7 +381,10 @@ def render_header(targets: Mapping[str, Any]) -> DateWindow:
     timezone_name = str(targets.get("report_timezone") or "Asia/Shanghai")
     anchor = today_for_timezone(timezone_name)
     st.title("Amazon Selling Monitor")
-    st.caption(f"ASIN: {targets.get('asin', lingxing_client.DEFAULT_ASIN)} | Marketplace: {targets.get('marketplace', 'US')}")
+    st.caption(
+        f"ASIN: {targets.get('asin', lingxing_client.DEFAULT_ASIN)} | "
+        f"Marketplace: {targets.get('marketplace', 'US')} | App: {app_version()}"
+    )
 
     cols = st.columns([1.4, 1, 1, 1])
     preset = cols[0].selectbox("Date Window", PRESETS, index=1)
@@ -510,12 +562,14 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
 
     st.subheader("Context Quality")
     render_key_values(
-        {
-            "Source": data["source_status"].get("mode"),
-            "Pulled At": data.get("pulled_at"),
-            "Missing Fields": ", ".join(data["source_status"].get("missing_fields") or []) or "None",
-            "Warnings": len(data["source_status"].get("warnings") or []),
-        }
+            {
+                "Source": data["source_status"].get("mode"),
+                "Pulled At": data.get("pulled_at"),
+                "Public Context": context.get("public_context_status", {}).get("status") or "unknown",
+                "Public Context Note": context.get("public_context_status", {}).get("message") or "None",
+                "Missing Fields": ", ".join(data["source_status"].get("missing_fields") or []) or "None",
+                "Warnings": len(data["source_status"].get("warnings") or []),
+            }
     )
 
     cols = st.columns(2)
@@ -554,16 +608,16 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
             {
                 "Title": safe_text(listing.get("title")),
                 "Price": safe_text(listing.get("price_display") or listing.get("price")),
-                "List Price": safe_text(listing.get("list_price_display")),
-                "Coupon": safe_text(listing.get("coupon_present")),
-                "Discount / Price Reduction": safe_text(listing.get("discount_present")),
-                "Amazon Deal": safe_text(listing.get("deal_present")),
+                "List Price": offer_value(listing.get("list_price_display")),
+                "Coupon": offer_value(listing.get("coupon_present")),
+                "Discount / Price Reduction": offer_value(listing.get("discount_present")),
+                "Amazon Deal": offer_value(listing.get("deal_present")),
                 "Rating": safe_text(listing.get("rating")),
                 "Reviews": number(listing.get("review_count")),
                 "Fulfillment": safe_text(listing.get("fulfillment_method")),
-                "Delivery Promise": safe_text(listing.get("delivery_promise")),
-                "Source": safe_text(listing.get("source")),
-                "Freshness": safe_text(listing.get("freshness")),
+                "Delivery Promise": offer_value(listing.get("delivery_promise")),
+                "Source": offer_value(listing.get("source")),
+                "Freshness": offer_value(listing.get("freshness")),
             }
         )
 
@@ -600,7 +654,8 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
             }
         )
     else:
-        st.caption("No selected competitor context is available. Connect Pangolin public context or configure core keywords.")
+        note = context.get("public_context_status", {}).get("message")
+        st.caption(note or "No selected competitor context is available. Connect Pangolin public context or configure core keywords.")
 
     st.subheader("Keyword & Placement")
     if keyword_placement:
@@ -610,7 +665,8 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
     elif placement_profile:
         st.dataframe(placement_profile, use_container_width=True, hide_index=True)
     else:
-        st.caption("No Lingxing keyword or placement context is available in the current pull.")
+        placement_warning = _first_matching_warning(data["source_status"].get("warnings") or [], ("placement", "keyword"))
+        st.caption(placement_warning or "No Lingxing keyword or placement context is available in the current pull.")
 
     st.subheader("Action History")
     if action_history:
@@ -662,6 +718,16 @@ def _competitor_table(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]
             }
         )
     return out
+
+
+def _first_matching_warning(warnings: Iterable[Any], fragments: Iterable[str]) -> str:
+    lowered = [fragment.lower() for fragment in fragments]
+    for warning in warnings:
+        text = str(warning)
+        compact = text.lower()
+        if any(fragment in compact for fragment in lowered):
+            return text
+    return ""
 
 
 def render_details(data: Dict[str, Any]) -> None:

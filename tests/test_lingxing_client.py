@@ -201,6 +201,36 @@ def test_call_known_tools_uses_selected_date_window():
     assert ("list_campaigns_with_date_and_portfolio_with_config_B0GXYYZPBW", {"start_date": "2026-06-05", "end_date": "2026-06-11", "page": 1, "length": 50}) in calls
 
 
+def test_call_known_tools_records_optional_context_failures():
+    class FakeSession:
+        async def call_tool(self, name, args):
+            if "placement_profile" in name:
+                raise RuntimeError("placement unavailable")
+            if name.startswith("get_orders"):
+                body = {"total_orders": 1, "total_sale_total": 39.99, "currency_code": "USD"}
+            elif name.startswith("get_asin_sales"):
+                body = {"total_units": 1}
+            elif name.startswith("list_campaigns_with_date"):
+                body = {"campaigns": [{"campaign_id": "c1", "campaign_type": "manual"}]}
+            else:
+                body = {"listing": {"title": "Sample listing"}}
+            return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(body))])
+
+    tool_names = [
+        "list_campaigns_with_date_and_portfolio_with_config_B0GXYYZPBW",
+        "get_product_listing_B0GXYYZPBW",
+        "get_asin_sales_B0GXYYZPBW",
+        "get_orders_B0GXYYZPBW",
+        "list_placement_profile_B0GXYYZPBW",
+    ]
+    client = LingxingClient("http://example.test/lingxing_config_B0GXYYZPBW/", asin="B0GXYYZPBW")
+
+    payload = asyncio.run(client._call_known_tools(FakeSession(), tool_names))
+
+    assert payload["placement_profile"] == {}
+    assert any("placement_profile" in warning for warning in payload["warnings"])
+
+
 def test_normalize_dashboard_payload_handles_lingxing_string_metrics_and_manual_sp():
     payload = {
         "orders": {"total_orders": "1", "total_sale_total": "39.99", "currency_code": "USD"},

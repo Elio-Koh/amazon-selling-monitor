@@ -138,7 +138,14 @@ def normalize_public_listing(product: Mapping[str, Any], *, source: str, zipcode
         "category_id": first_text(product.get("category_id")),
         "category_name": first_text(product.get("category_name")),
         "best_sellers_rank": first_text(product.get("bestSellersRank") or product.get("best_sellers_rank")),
-        "delivery_promise": normalize_delivery(product.get("deliveryTime") or product.get("delivery")),
+        "delivery_promise": normalize_delivery(
+            product.get("deliveryTime")
+            or product.get("delivery")
+            or product.get("deliveryPromise")
+            or product.get("delivery_promise")
+            or product.get("availability")
+            or product.get("inStock")
+        ),
         "source": source,
         "freshness": captured_at,
         "captured_at": captured_at,

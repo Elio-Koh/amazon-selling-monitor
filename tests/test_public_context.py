@@ -64,6 +64,19 @@ def test_normalize_public_listing_splits_discount_and_deal():
     assert listing["deal_present"] is False
 
 
+def test_normalize_public_listing_reads_delivery_promise_aliases():
+    listing = normalize_public_listing(
+        {
+            "asin": "B0GXYYZPBW",
+            "deliveryPromise": {"deliveryTime": "Mon, Jun 15", "fastestDelivery": "Sat, Jun 13"},
+        },
+        source="pangolin:amzProductDetail",
+        zipcode="10041",
+    )
+
+    assert listing["delivery_promise"] == "Mon, Jun 15; fastest Sat, Jun 13"
+
+
 def test_build_public_context_selects_keywords_and_competitors():
     context = build_public_context(
         asin="B0GXYYZPBW",

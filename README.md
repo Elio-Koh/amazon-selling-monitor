@@ -19,9 +19,12 @@ streamlit run app.py
 ASIN = "B0GXYYZPBW"
 LINGXING_MCP_URL = "http://34.143.132.97:8368/lingxing_config_B0GXYYZPBW/"
 LINGXING_MCP_TRANSPORT = "streamable_http"
+PANGOLINFO_API_TOKEN = "paste-token-in-streamlit-secrets-only"
 ```
 
 `LINGXING_MCP_URL` 必须是 Streamlit Cloud 可以直接访问并完成 MCP 会话的端点。当前 Lingxing FastMCP 服务使用 Streamable HTTP，建议把 `LINGXING_MCP_TRANSPORT` 显式设为 `streamable_http`；不配置时应用会先尝试 Streamable HTTP，再回退到 SSE。Codex 本地配置里的 MCP config URL 不一定等同于公开可用的 MCP endpoint；如果该地址返回 404 或 MCP 握手失败，页面会显示“实时数据源不可用”，不会继续展示样例业务数字。
+
+`PANGOLINFO_API_TOKEN` 只用于 Pangolin public context：Listing 前台 offer、delivery promise、核心关键词 SERP、竞品选择与排名上下文。不要把真实 token 写入 Git；只放在 Streamlit Cloud Secrets。更新 secrets 或拉取新 commit 后，从 Streamlit Cloud 的 Manage app 重启应用，并点击页面里的 `Refresh Data` 清理缓存。
 
 实时 MCP 模式需要 Python 3.10+ 才会安装 `mcp>=1.9`。本仓库的 `runtime.txt` 已配置 `python-3.11.9`；如果本地旧 `.venv` 是 Python 3.8，只能跑普通单元测试，不能跑 live MCP 拉数。
 

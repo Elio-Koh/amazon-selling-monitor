@@ -218,3 +218,35 @@ def test_date_inputs_allow_manual_override_of_preset(monkeypatch):
     assert window.label == "Jun 1 - Jun 3"
     assert window.start_date == "2026-06-01"
     assert window.end_date == "2026-06-03"
+
+
+def test_enrich_public_context_without_token_preserves_configured_keywords(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    data = {
+        "asin": "B0GXYYZPBW",
+        "context": {"listing": {"title": "Sample milk frother"}},
+        "source_status": {"warnings": []},
+    }
+
+    enriched = app.enrich_public_context(
+        data,
+        {
+            "asin": "B0GXYYZPBW",
+            "marketplace": "US",
+            "core_keywords": ["milk frother", "coffee frother"],
+        },
+    )
+
+    assert enriched["context"]["public_context_status"]["status"] == "missing_token"
+    assert enriched["context"]["core_keywords"][0]["keyword"] == "milk frother"
+    assert enriched["context"]["core_keywords"][0]["rank_status"] == "not_checked"
+    assert "PANGOLINFO_API_TOKEN" in enriched["source_status"]["warnings"][0]
+
+
+def test_offer_value_formatting_uses_yes_no_and_none(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+
+    assert app.offer_value(True) == "Yes"
+    assert app.offer_value(False) == "No"
+    assert app.offer_value(None) == "None"
+    assert app.offer_value("") == "None"

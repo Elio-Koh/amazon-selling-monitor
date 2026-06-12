@@ -371,6 +371,7 @@ class LingxingClient:
             "page": 1,
             "length": 50,
         }
+        warnings: List[str] = []
 
         async def call_first(fragments: Iterable[str], args: Mapping[str, Any]) -> Any:
             for name in names:
@@ -383,7 +384,10 @@ class LingxingClient:
         async def call_optional(fragments: Iterable[str], args: Mapping[str, Any]) -> Any:
             try:
                 return await call_first(fragments, args)
-            except Exception:
+            except Exception as exc:
+                warnings.append(
+                    f"Optional Lingxing context pull failed for {'/'.join(fragments)}: {type(exc).__name__}: {exc}"
+                )
                 return {}
 
         orders = await call_first(("get_orders", self.asin), dated_args)
@@ -419,7 +423,7 @@ class LingxingClient:
             "date_window": {"start_date": start_date, "end_date": end_date},
             "pulled_at": now_iso(),
             "source_mode": "live_mcp",
-            "warnings": [],
+            "warnings": warnings,
         }
 
     def fetch_dashboard(
