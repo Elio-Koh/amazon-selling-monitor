@@ -115,6 +115,8 @@ def normalize_dashboard_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
             "inventory": dict(inventory),
             "market": payload.get("market") if isinstance(payload.get("market"), Mapping) else {},
             "keyword_market": payload.get("keyword_market") if isinstance(payload.get("keyword_market"), list) else [],
+            "placement_profile": _extract_rows(payload.get("placement_profile")),
+            "keyword_placement": _extract_rows(payload.get("keyword_placement")),
             "action_history": payload.get("action_history") if isinstance(payload.get("action_history"), list) else [],
         },
         "source_status": {
@@ -152,9 +154,39 @@ def _normalize_listing(listing: Mapping[str, Any]) -> Dict[str, Any]:
     normalized.setdefault("price_display", promotion.get("current_price") or listing.get("price"))
     normalized.setdefault("list_price_display", promotion.get("list_price") or listing.get("list_price"))
     normalized.setdefault("coupon_present", promotion.get("has_coupon") if "has_coupon" in promotion else listing.get("has_coupon"))
-    normalized.setdefault("deal_present", promotion.get("has_discount") if "has_discount" in promotion else listing.get("has_discount"))
+    normalized.setdefault("discount_present", promotion.get("has_discount") if "has_discount" in promotion else listing.get("has_discount"))
+    normalized.setdefault("deal_present", _explicit_deal_present(listing, promotion))
     normalized.setdefault("coupon_pct", promotion.get("discount_percentage"))
     return normalized
+
+
+def _explicit_deal_present(listing: Mapping[str, Any], promotion: Mapping[str, Any]) -> bool:
+    for source in (listing, promotion):
+        for key in ("deal_present", "has_deal", "is_deal", "lightning_deal", "best_deal", "deal"):
+            if key not in source:
+                continue
+            value = source.get(key)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.strip().lower() in {"true", "yes", "1", "deal", "lightning_deal", "best_deal"}
+            return bool(value)
+        for key in ("deal_status", "deal_type", "badge"):
+            value = source.get(key)
+            if isinstance(value, str) and "deal" in value.lower():
+                return True
+    return False
+
+
+def _extract_rows(value: Any) -> List[Dict[str, Any]]:
+    if isinstance(value, list):
+        return [dict(row) for row in value if isinstance(row, Mapping)]
+    if isinstance(value, Mapping):
+        for key in ("data", "rows", "items", "campaigns", "keywords"):
+            rows = value.get(key)
+            if isinstance(rows, list):
+                return [dict(row) for row in rows if isinstance(row, Mapping)]
+    return []
 
 
 def load_fixture_payload(path: Path = DEFAULT_FIXTURE_PATH) -> Dict[str, Any]:
@@ -199,6 +231,8 @@ def build_blocked_dashboard(*, asin: str, mode: str, reason: str) -> Dict[str, A
             "inventory": {},
             "market": {},
             "keyword_market": [],
+            "placement_profile": [],
+            "keyword_placement": [],
             "action_history": [],
         },
         "source_status": {
@@ -346,12 +380,26 @@ class LingxingClient:
                     return _mcp_result_to_json(result)
             return {}
 
+        async def call_optional(fragments: Iterable[str], args: Mapping[str, Any]) -> Any:
+            try:
+                return await call_first(fragments, args)
+            except Exception:
+                return {}
+
         orders = await call_first(("get_orders", self.asin), dated_args)
         asin_sales = await call_first(("get_asin_sales", self.asin), dated_args)
         campaigns = await call_first(("list_campaigns_with_date", self.asin), campaign_args)
         if not campaigns:
             campaigns = await call_first(("campaign",), campaign_args)
         listing = await call_first(("listing", self.asin), {"asin": self.asin})
+        placement_profile = await call_optional(
+            ("placement_profile", self.asin),
+            {**campaign_args, "sort_field": "spends", "sort_type": "desc", "with_ring": 0},
+        )
+        keyword_placement = await call_optional(
+            ("keywords_placement",),
+            {**campaign_args, "sort_field": "spends", "sort_type": "desc"},
+        )
 
         if isinstance(campaigns, Mapping):
             campaign_rows = campaigns.get("campaigns") or campaigns.get("data") or []
@@ -366,6 +414,8 @@ class LingxingClient:
             "asin_sales": asin_sales if isinstance(asin_sales, Mapping) else {},
             "campaigns": campaign_rows if isinstance(campaign_rows, list) else [],
             "listing": listing if isinstance(listing, Mapping) else {},
+            "placement_profile": placement_profile,
+            "keyword_placement": keyword_placement,
             "date_window": {"start_date": start_date, "end_date": end_date},
             "pulled_at": now_iso(),
             "source_mode": "live_mcp",

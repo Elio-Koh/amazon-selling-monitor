@@ -184,5 +184,37 @@ def test_date_inputs_for_yesterday_show_resolved_window(monkeypatch):
     window = app.render_header({"asin": "B0GXYYZPBW", "marketplace": "US"})
 
     assert window.start_date == "2026-06-11"
-    assert ("date_input", "Start Date", "2026-06-11", True) in calls
-    assert ("date_input", "End Date", "2026-06-11", True) in calls
+    assert ("date_input", "Start Date", "2026-06-11", False) in calls
+    assert ("date_input", "End Date", "2026-06-11", False) in calls
+
+
+def test_date_inputs_allow_manual_override_of_preset(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    from datetime import date
+
+    class Columns(list):
+        pass
+
+    class FakeColumn:
+        def selectbox(self, label, options, index=0):
+            return "Last 7 Days"
+
+        def date_input(self, label, value, disabled=False):
+            if label == "Start Date":
+                return date(2026, 6, 1)
+            return date(2026, 6, 3)
+
+        def button(self, label, use_container_width=False):
+            return False
+
+    monkeypatch.setattr(app.st, "columns", lambda spec: Columns([FakeColumn(), FakeColumn(), FakeColumn(), FakeColumn()]))
+    monkeypatch.setattr(app, "today_for_timezone", lambda timezone_name="Asia/Shanghai": date(2026, 6, 12))
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+
+    window = app.render_header({"asin": "B0GXYYZPBW", "marketplace": "US"})
+
+    assert window.preset == "Custom"
+    assert window.label == "Jun 1 - Jun 3"
+    assert window.start_date == "2026-06-01"
+    assert window.end_date == "2026-06-03"

@@ -253,6 +253,55 @@ def test_normalize_dashboard_payload_extracts_sales_and_campaigns():
     assert normalized["source_status"]["mode"] == "live_or_fixture"
 
 
+def test_lingxing_discount_does_not_imply_amazon_deal():
+    payload = {
+        "orders": {"total_orders": 0, "total_sale_total": 0, "currency_code": "USD"},
+        "asin_sales": {"total_units": 0},
+        "campaigns": [],
+        "listing": {
+            "listing": {
+                "title": "Sample product",
+                "promotion_status": {
+                    "has_coupon": False,
+                    "has_discount": True,
+                    "current_price": "$39.99",
+                    "list_price": "",
+                },
+            }
+        },
+    }
+
+    normalized = normalize_dashboard_payload(payload)
+    listing = normalized["context"]["listing"]
+
+    assert listing["discount_present"] is True
+    assert listing["deal_present"] is False
+    assert listing["coupon_present"] is False
+
+
+def test_explicit_deal_signal_sets_deal_present():
+    payload = {
+        "orders": {"total_orders": 0, "total_sale_total": 0, "currency_code": "USD"},
+        "asin_sales": {"total_units": 0},
+        "campaigns": [],
+        "listing": {
+            "listing": {
+                "title": "Sample product",
+                "has_deal": True,
+                "promotion_status": {
+                    "has_discount": True,
+                    "current_price": "$39.99",
+                },
+            }
+        },
+    }
+
+    normalized = normalize_dashboard_payload(payload)
+
+    assert normalized["context"]["listing"]["discount_present"] is True
+    assert normalized["context"]["listing"]["deal_present"] is True
+
+
 def test_normalize_dashboard_payload_records_missing_parent_sales():
     payload = {
         "orders": {},

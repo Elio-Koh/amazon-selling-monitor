@@ -12,3 +12,17 @@ product:
   sp_orders_daily_min: 22
   sp_orders_daily_max: 60
   sp_orders_target_period: daily
+  pangolin_enabled: true
+  pangolin_zipcode: "10041"
+  max_competitors: 10
+  core_keywords:
+    - milk frother
+    - coffee frother
+    - handheld milk frother
+    - electric drink mixer
+    - latte frother
+    - matcha whisk
+    - rechargeable milk frother
+    - protein mixer
+  pinned_competitor_asins: []
+  excluded_competitor_asins: []

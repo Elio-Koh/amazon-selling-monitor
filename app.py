@@ -6,6 +6,7 @@ import importlib
 import inspect
 import json
 import os
+import re
 from datetime import date
 from typing import Any, Dict, Iterable, Mapping
 
@@ -15,6 +16,8 @@ from src import lingxing_client
 from src import metrics
 from src.config import load_targets
 from src.date_windows import PRESETS, DateWindow, resolve_date_window, today_for_timezone
+from src.pangolin_client import PangolinClient, PangolinError
+from src.public_context import build_public_context
 
 
 st.set_page_config(
@@ -154,6 +157,60 @@ def build_summary_with_reload(
         )
 
 
+def enrich_public_context(data: Dict[str, Any], targets: Mapping[str, Any]) -> Dict[str, Any]:
+    enabled = bool(targets.get("pangolin_enabled", True))
+    token = secrets_get("PANGOLINFO_API_TOKEN") or secrets_get("PANGOLIN_API_TOKEN")
+    context = data.setdefault("context", {})
+    warnings = data.setdefault("source_status", {}).setdefault("warnings", [])
+    if not enabled:
+        warnings.append("Pangolin public context is disabled in targets config.")
+        return data
+    if not token:
+        warnings.append("Pangolin public context skipped: PANGOLINFO_API_TOKEN is not configured.")
+        return data
+
+    asin = str(targets.get("asin") or data.get("asin") or lingxing_client.DEFAULT_ASIN)
+    marketplace = str(targets.get("marketplace") or "US")
+    core_keywords = [str(item) for item in targets.get("core_keywords", []) or [] if str(item).strip()]
+    if not core_keywords:
+        title = context.get("listing", {}).get("title") if isinstance(context.get("listing"), Mapping) else ""
+        core_keywords = _keywords_from_title(str(title), limit=6)
+    try:
+        public = build_public_context(
+            asin=asin,
+            marketplace=marketplace,
+            zipcode=str(targets.get("pangolin_zipcode") or "10041"),
+            core_keywords=core_keywords,
+            pinned_competitor_asins=[str(item) for item in targets.get("pinned_competitor_asins", []) or []],
+            excluded_competitor_asins=[str(item) for item in targets.get("excluded_competitor_asins", []) or []],
+            max_competitors=int(targets.get("max_competitors") or 10),
+            client=PangolinClient(api_token=str(token)),
+        )
+    except (PangolinError, RuntimeError, ValueError) as exc:
+        warnings.append(f"Pangolin public context failed: {type(exc).__name__}: {exc}")
+        return data
+
+    context.update(public)
+    return data
+
+
+def _keywords_from_title(title: str, *, limit: int) -> list[str]:
+    normalized = " ".join(re.sub(r"[^a-zA-Z0-9 ]+", " ", title).lower().split())
+    candidates = []
+    for phrase in (
+        "milk frother",
+        "coffee frother",
+        "handheld frother",
+        "electric drink mixer",
+        "latte frother",
+        "matcha whisk",
+        "protein mixer",
+    ):
+        if phrase in normalized:
+            candidates.append(phrase)
+    return candidates[:limit] or ["milk frother", "coffee frother", "handheld milk frother"][:limit]
+
+
 def ensure_runtime_compatibility() -> None:
     lingxing_params = inspect.signature(lingxing_client.LingxingClient.fetch_dashboard).parameters
     metrics_params = inspect.signature(metrics.build_dashboard_summary).parameters
@@ -201,7 +258,7 @@ def load_dashboard_data(
     transport = secrets_get("LINGXING_MCP_TRANSPORT", "auto")
     if server_url:
         try:
-            return fetch_dashboard_with_reload(
+            dashboard = fetch_dashboard_with_reload(
                 server_url=str(server_url),
                 asin=str(asin),
                 transport=str(transport),
@@ -210,6 +267,7 @@ def load_dashboard_data(
                 sp_campaign_ids=sp_campaign_ids,
                 known_non_sp_campaign_ids=known_non_sp_campaign_ids,
             )
+            return enrich_public_context(dashboard, load_targets())
         except Exception as exc:
             blocked = lingxing_client.build_blocked_dashboard(
                 asin=str(asin),
@@ -222,7 +280,7 @@ def load_dashboard_data(
                 ),
             )
             blocked["date_window"] = {"start_date": start_date, "end_date": end_date}
-            return blocked
+            return enrich_public_context(blocked, load_targets())
     dashboard = lingxing_client.load_fixture_dashboard(
         sp_campaign_ids=sp_campaign_ids,
         known_non_sp_campaign_ids=known_non_sp_campaign_ids,
@@ -230,7 +288,7 @@ def load_dashboard_data(
     dashboard["date_window"] = {"start_date": start_date, "end_date": end_date}
     dashboard["source_status"]["mode"] = "fixture_no_live_url"
     dashboard["source_status"]["warnings"].append("LINGXING_MCP_URL is not configured.")
-    return dashboard
+    return enrich_public_context(dashboard, load_targets())
 
 
 def inject_css() -> None:
@@ -281,17 +339,22 @@ def render_header(targets: Mapping[str, Any]) -> DateWindow:
     preview_window = resolve_date_window(preset, anchor_date=anchor)
     start_default = date.fromisoformat(preview_window.start_date) if preset != "Custom" else anchor
     end_default = date.fromisoformat(preview_window.end_date) if preset != "Custom" else anchor
-    custom_start = cols[1].date_input("Start Date", start_default, disabled=preset != "Custom")
-    custom_end = cols[2].date_input("End Date", end_default, disabled=preset != "Custom")
+    custom_start = cols[1].date_input("Start Date", start_default)
+    custom_end = cols[2].date_input("End Date", end_default)
     if cols[3].button("Refresh Data", use_container_width=True):
         st.session_state.refresh_counter = st.session_state.get("refresh_counter", 0) + 1
         load_dashboard_data.clear()
 
+    selected_start = _as_date(custom_start)
+    selected_end = _as_date(custom_end)
+    effective_preset = preset
+    if selected_start != start_default or selected_end != end_default:
+        effective_preset = "Custom"
     return resolve_date_window(
-        preset,
+        effective_preset,
         anchor_date=anchor,
-        custom_start=_as_date(custom_start),
-        custom_end=_as_date(custom_end),
+        custom_start=selected_start,
+        custom_end=selected_end,
     )
 
 
@@ -351,7 +414,7 @@ def render_overview(data: Dict[str, Any], summary: Dict[str, Any], currency: str
     sp_goal = summary["sp_goal"]
     all_ads = summary["advertising"]["all_ads"]
     inventory = data["context"]["inventory"]
-    listing = data["context"]["listing"]
+    listing = data["context"].get("public_listing") or data["context"]["listing"]
 
     cols = st.columns(3)
     with cols[0]:
@@ -433,10 +496,13 @@ def _campaign_table(campaigns: Iterable[Mapping[str, Any]]) -> list[dict[str, An
 
 def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str) -> None:
     context = data["context"]
-    listing = context.get("listing", {})
+    listing = context.get("public_listing") or context.get("listing", {})
     inventory = context.get("inventory", {})
     market = context.get("market", {})
-    keywords = context.get("keyword_market", [])
+    core_keywords = context.get("core_keywords", [])
+    keyword_market = context.get("keyword_market", [])
+    placement_profile = context.get("placement_profile", [])
+    keyword_placement = context.get("keyword_placement", [])
     action_history = context.get("action_history", [])
     sales = data.get("sales", {})
     all_ads = summary["advertising"]["all_ads"]
@@ -482,15 +548,22 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
     cols = st.columns(2)
     with cols[0]:
         st.subheader("Listing & Offer")
+        if listing.get("main_image_url"):
+            st.image(listing["main_image_url"], width=180)
         render_key_values(
             {
                 "Title": safe_text(listing.get("title")),
                 "Price": safe_text(listing.get("price_display") or listing.get("price")),
+                "List Price": safe_text(listing.get("list_price_display")),
                 "Coupon": safe_text(listing.get("coupon_present")),
-                "Deal": safe_text(listing.get("deal_present")),
+                "Discount / Price Reduction": safe_text(listing.get("discount_present")),
+                "Amazon Deal": safe_text(listing.get("deal_present")),
                 "Rating": safe_text(listing.get("rating")),
                 "Reviews": number(listing.get("review_count")),
                 "Fulfillment": safe_text(listing.get("fulfillment_method")),
+                "Delivery Promise": safe_text(listing.get("delivery_promise")),
+                "Source": safe_text(listing.get("source")),
+                "Freshness": safe_text(listing.get("freshness")),
             }
         )
 
@@ -507,23 +580,37 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
             }
         )
 
+    st.subheader("Core Keywords")
+    if core_keywords:
+        st.dataframe(_core_keyword_table(core_keywords), use_container_width=True, hide_index=True)
+    else:
+        st.caption("Core keyword context is not available in the current pull.")
+
     st.subheader("Market & Competitors")
-    if market:
+    selected_competitors = market.get("selected_competitors") if isinstance(market, Mapping) else []
+    if selected_competitors:
+        st.dataframe(_competitor_table(selected_competitors), use_container_width=True, hide_index=True)
         render_key_values(
             {
                 "Category CVR": safe_text(market.get("category_average_cvr")),
-                "Seasonality": safe_text(market.get("seasonality")),
-                "Off-Amazon Activity": safe_text(market.get("off_amazon_activity")),
+                "CVR Source": safe_text(market.get("category_average_cvr_source")),
+                "Competitor Source": safe_text(market.get("selected_competitors_source") or market.get("source")),
+                "Freshness": safe_text(market.get("freshness")),
+                "Confidence": safe_text(market.get("confidence")),
             }
         )
     else:
-        st.caption("No market or competitor context is available in the current pull.")
+        st.caption("No selected competitor context is available. Connect Pangolin public context or configure core keywords.")
 
-    st.subheader("Keyword & Rank")
-    if keywords:
-        st.dataframe(keywords, use_container_width=True)
+    st.subheader("Keyword & Placement")
+    if keyword_placement:
+        st.dataframe(keyword_placement, use_container_width=True, hide_index=True)
+    elif keyword_market:
+        st.dataframe(keyword_market, use_container_width=True, hide_index=True)
+    elif placement_profile:
+        st.dataframe(placement_profile, use_container_width=True, hide_index=True)
     else:
-        st.caption("No keyword or rank context is available in the current pull.")
+        st.caption("No Lingxing keyword or placement context is available in the current pull.")
 
     st.subheader("Action History")
     if action_history:
@@ -535,6 +622,46 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
 def render_key_values(values: Mapping[str, Any]) -> None:
     rows = [{"Metric": key, "Value": safe_text(value)} for key, value in values.items()]
     st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+def _core_keyword_table(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for row in rows:
+        out.append(
+            {
+                "Keyword": row.get("keyword"),
+                "Tier": row.get("tier"),
+                "Rank Status": row.get("rank_status"),
+                "Organic Rank": row.get("own_organic_rank"),
+                "Ad Rank": row.get("own_ad_rank"),
+                "Source": row.get("source"),
+                "Confidence": row.get("confidence"),
+            }
+        )
+    return out
+
+
+def _competitor_table(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for row in rows:
+        rank = row.get("rank_relationship") if isinstance(row.get("rank_relationship"), Mapping) else {}
+        out.append(
+            {
+                "Tier": row.get("tier"),
+                "ASIN": row.get("asin"),
+                "Title": row.get("title"),
+                "Price": row.get("price"),
+                "Rating": row.get("rating"),
+                "Reviews": row.get("review_count"),
+                "Coupon": row.get("coupon_present"),
+                "Deal": row.get("deal_present"),
+                "Best Organic Rank": rank.get("best_organic_rank"),
+                "Best Ad Rank": rank.get("best_ad_rank"),
+                "Matched Keywords": ", ".join(str(item) for item in row.get("keywords", []) or []),
+                "Why Selected": ", ".join(str(item) for item in row.get("why_selected", []) or []),
+            }
+        )
+    return out
 
 
 def render_details(data: Dict[str, Any]) -> None:
