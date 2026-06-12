@@ -88,12 +88,15 @@ def build_dashboard_summary(
     total_units: float,
     ad_summary: Mapping[str, Mapping[str, Optional[float]]],
     targets: Mapping[str, float],
+    window_days: int = 1,
 ) -> Dict[str, object]:
     sp = ad_summary.get("sp", {})
     target_acos = float(targets["sp_target_acos"])
     daily_budget = float(targets["sp_daily_budget_current"])
-    min_orders = float(targets["sp_orders_daily_min"])
-    max_orders = float(targets["sp_orders_daily_max"])
+    days = max(int(window_days or 1), 1)
+    window_budget = daily_budget * days
+    min_orders = float(targets["sp_orders_daily_min"]) * days
+    max_orders = float(targets["sp_orders_daily_max"]) * days
     sp_orders = float(sp.get("orders") or 0)
     sp_spend = float(sp.get("spend") or 0)
     sp_acos = sp.get("acos")
@@ -109,7 +112,9 @@ def build_dashboard_summary(
             "current_acos": sp_acos,
             "acos_delta": round(float(sp_acos or 0) - target_acos, 4),
             "daily_budget": daily_budget,
-            "budget_used_pct": safe_div(sp_spend, daily_budget),
+            "window_budget": window_budget,
+            "window_days": days,
+            "budget_used_pct": safe_div(sp_spend, window_budget),
             "orders": sp_orders,
             "orders_min": min_orders,
             "orders_max": max_orders,

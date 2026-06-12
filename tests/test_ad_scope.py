@@ -68,3 +68,40 @@ def test_unknown_campaign_stays_in_all_ads_with_unknown_status():
     assert resolved.status == "unknown"
     assert resolved.ad_product == "unknown"
     assert resolved.evidence_type == "missing_ad_product_evidence"
+
+
+def test_resolver_treats_auto_manual_campaign_type_as_sp_evidence():
+    resolver = AdScopeResolver()
+    campaigns = [
+        {
+            "campaign_id": "230170919088708",
+            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_type": "auto",
+        },
+        {
+            "campaign_id": "173844737302109",
+            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_type": "manual",
+        },
+    ]
+
+    resolved = [resolver.resolve(campaign) for campaign in campaigns]
+
+    assert [item.status for item in resolved] == ["sp_verified", "sp_verified"]
+    assert [item.evidence_type for item in resolved] == ["campaign_type_auto_manual", "campaign_type_auto_manual"]
+
+
+def test_explicit_non_sp_ad_product_overrides_manual_campaign_type():
+    resolver = AdScopeResolver()
+    campaign = {
+        "campaign_id": "sb-manual",
+        "campaign_name": "Brand launch",
+        "campaign_type": "manual",
+        "ad_product_type": "SB",
+    }
+
+    resolved = resolver.resolve(campaign)
+
+    assert resolved.status == "excluded"
+    assert resolved.ad_product == "SB"
+    assert resolved.evidence_type == "explicit_non_sp_ad_product_type"

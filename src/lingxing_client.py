@@ -59,8 +59,10 @@ def first_present(mapping: Mapping[str, Any], keys: Iterable[str]) -> Any:
 def normalize_dashboard_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     orders = payload.get("orders") if isinstance(payload.get("orders"), Mapping) else {}
     asin_sales = payload.get("asin_sales") if isinstance(payload.get("asin_sales"), Mapping) else {}
-    campaigns = payload.get("campaigns") if isinstance(payload.get("campaigns"), list) else []
-    listing = payload.get("listing") if isinstance(payload.get("listing"), Mapping) else {}
+    raw_campaigns = payload.get("campaigns") if isinstance(payload.get("campaigns"), list) else []
+    campaigns = [_normalize_campaign_row(row) for row in raw_campaigns if isinstance(row, Mapping)]
+    listing_payload = payload.get("listing") if isinstance(payload.get("listing"), Mapping) else {}
+    listing = _normalize_listing(listing_payload)
     inventory = payload.get("inventory") if isinstance(payload.get("inventory"), Mapping) else {}
 
     total_sales = as_float(
@@ -71,7 +73,11 @@ def normalize_dashboard_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     if total_units is None:
         total_units = total_orders
 
-    resolver = AdScopeResolver(route_scope=str(payload.get("route_scope") or ""))
+    resolver = AdScopeResolver(
+        whitelist=payload.get("sp_campaign_ids") if isinstance(payload.get("sp_campaign_ids"), list) else [],
+        known_non_sp=payload.get("known_non_sp_campaign_ids") if isinstance(payload.get("known_non_sp_campaign_ids"), list) else [],
+        route_scope=str(payload.get("route_scope") or ""),
+    )
     split = split_campaigns_by_scope(campaigns, resolver)
     ad_summary = summarize_advertising(
         sp_campaigns=split.sp_campaigns,
@@ -93,6 +99,7 @@ def normalize_dashboard_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     return {
         "asin": payload.get("asin") or DEFAULT_ASIN,
         "pulled_at": payload.get("pulled_at") or now_iso(),
+        "date_window": payload.get("date_window") if isinstance(payload.get("date_window"), Mapping) else {},
         "sales": {
             "total_sales": total_sales or 0,
             "total_orders": total_orders or 0,
@@ -119,13 +126,51 @@ def normalize_dashboard_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _normalize_campaign_row(row: Mapping[str, Any]) -> Dict[str, Any]:
+    out = dict(row)
+    out["campaign_id"] = first_present(row, ("campaign_id", "id"))
+    out["campaign_name"] = first_present(row, ("campaign_name", "name"))
+    out["campaign_type"] = first_present(row, ("campaign_type", "targeting_type"))
+    out["targeting_type"] = first_present(row, ("targeting_type", "campaign_type"))
+    out["status"] = first_present(row, ("status", "campaign_state", "state"))
+    out["spend"] = as_float(first_present(row, ("spend", "spends", "cost"))) or 0
+    out["sales"] = as_float(first_present(row, ("sales", "ad_sales", "direct_sales"))) or 0
+    out["orders"] = as_float(first_present(row, ("orders", "ad_orders", "direct_orders"))) or 0
+    out["clicks"] = as_float(row.get("clicks")) or 0
+    out["impressions"] = as_float(row.get("impressions")) or 0
+    if "bidding" in row and "placement_bid_adjustments" not in out:
+        out["placement_bid_adjustments"] = row.get("bidding")
+    return out
+
+
+def _normalize_listing(listing: Mapping[str, Any]) -> Dict[str, Any]:
+    raw_listing = listing.get("listing")
+    if isinstance(raw_listing, Mapping):
+        listing = raw_listing
+    promotion = listing.get("promotion_status") if isinstance(listing.get("promotion_status"), Mapping) else {}
+    normalized = dict(listing)
+    normalized.setdefault("price_display", promotion.get("current_price") or listing.get("price"))
+    normalized.setdefault("list_price_display", promotion.get("list_price") or listing.get("list_price"))
+    normalized.setdefault("coupon_present", promotion.get("has_coupon") if "has_coupon" in promotion else listing.get("has_coupon"))
+    normalized.setdefault("deal_present", promotion.get("has_discount") if "has_discount" in promotion else listing.get("has_discount"))
+    normalized.setdefault("coupon_pct", promotion.get("discount_percentage"))
+    return normalized
+
+
 def load_fixture_payload(path: Path = DEFAULT_FIXTURE_PATH) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def load_fixture_dashboard(path: Path = DEFAULT_FIXTURE_PATH) -> Dict[str, Any]:
+def load_fixture_dashboard(
+    path: Path = DEFAULT_FIXTURE_PATH,
+    *,
+    sp_campaign_ids: Optional[Iterable[str]] = None,
+    known_non_sp_campaign_ids: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
     payload = load_fixture_payload(path)
     payload["source_mode"] = "fixture"
+    payload["sp_campaign_ids"] = list(sp_campaign_ids or [])
+    payload["known_non_sp_campaign_ids"] = list(known_non_sp_campaign_ids or [])
     return normalize_dashboard_payload(payload)
 
 
@@ -134,6 +179,7 @@ def build_blocked_dashboard(*, asin: str, mode: str, reason: str) -> Dict[str, A
     return {
         "asin": asin,
         "pulled_at": timestamp,
+        "date_window": {},
         "sales": {
             "total_sales": 0,
             "total_orders": 0,
@@ -204,29 +250,29 @@ class LingxingClient:
                 f"Expected one of: {', '.join(sorted(VALID_MCP_TRANSPORTS))}."
             )
 
-    async def fetch_live_payload(self) -> Dict[str, Any]:
+    async def fetch_live_payload(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Dict[str, Any]:
         if self.transport == "auto":
             try:
-                return await self._fetch_with_transport("streamable_http")
+                return await self._fetch_with_transport("streamable_http", start_date=start_date, end_date=end_date)
             except MCPTransportError as streamable_error:
                 try:
-                    return await self._fetch_with_transport("sse")
+                    return await self._fetch_with_transport("sse", start_date=start_date, end_date=end_date)
                 except Exception as sse_error:
                     raise RuntimeError(
                         "Lingxing MCP auto transport failed. "
                         f"streamable_http: {streamable_error}; "
                         f"sse: {type(sse_error).__name__}: {sse_error}"
                     ) from sse_error
-        return await self._fetch_with_transport(self.transport)
+        return await self._fetch_with_transport(self.transport, start_date=start_date, end_date=end_date)
 
-    async def _fetch_with_transport(self, transport: str) -> Dict[str, Any]:
+    async def _fetch_with_transport(self, transport: str, *, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Dict[str, Any]:
         if transport == "streamable_http":
-            return await self._fetch_streamable_http()
+            return await self._fetch_streamable_http(start_date=start_date, end_date=end_date)
         if transport == "sse":
-            return await self._fetch_sse()
+            return await self._fetch_sse(start_date=start_date, end_date=end_date)
         raise ValueError(f"Unsupported Lingxing MCP transport: {transport}")
 
-    async def _fetch_streamable_http(self) -> Dict[str, Any]:
+    async def _fetch_streamable_http(self, *, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Dict[str, Any]:
         ClientSession = _load_client_session()
         try:
             from mcp.client.streamable_http import streamable_http_client  # type: ignore
@@ -240,7 +286,7 @@ class LingxingClient:
                 async with ClientSession(read_stream, write_stream) as session:
                     tool_names = await _initialize_and_list_tools(session, "streamable_http")
                     initialized = True
-                    return await self._call_known_tools(session, tool_names)
+                    return await self._call_known_tools(session, tool_names, start_date=start_date, end_date=end_date)
         except Exception as exc:
             if initialized:
                 raise
@@ -248,7 +294,7 @@ class LingxingClient:
                 raise
             raise MCPTransportError(f"streamable_http transport failed before tool calls: {exc}") from exc
 
-    async def _fetch_sse(self) -> Dict[str, Any]:
+    async def _fetch_sse(self, *, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Dict[str, Any]:
         ClientSession = _load_client_session()
         try:
             from mcp.client.sse import sse_client  # type: ignore
@@ -261,7 +307,7 @@ class LingxingClient:
                 async with ClientSession(*streams) as session:
                     tool_names = await _initialize_and_list_tools(session, "sse")
                     initialized = True
-                    return await self._call_known_tools(session, tool_names)
+                    return await self._call_known_tools(session, tool_names, start_date=start_date, end_date=end_date)
         except Exception as exc:
             if initialized:
                 raise
@@ -269,9 +315,18 @@ class LingxingClient:
                 raise
             raise MCPTransportError(f"sse transport failed before tool calls: {exc}") from exc
 
-    async def _call_known_tools(self, session: Any, tool_names: Iterable[str]) -> Dict[str, Any]:
+    async def _call_known_tools(
+        self,
+        session: Any,
+        tool_names: Iterable[str],
+        *,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
         names = list(tool_names)
-        start_date, end_date = _default_report_dates()
+        default_start, default_end = _default_report_dates()
+        start_date = start_date or default_start
+        end_date = end_date or default_end
         dated_args = {
             "start_date": start_date,
             "end_date": end_date,
@@ -311,13 +366,23 @@ class LingxingClient:
             "asin_sales": asin_sales if isinstance(asin_sales, Mapping) else {},
             "campaigns": campaign_rows if isinstance(campaign_rows, list) else [],
             "listing": listing if isinstance(listing, Mapping) else {},
+            "date_window": {"start_date": start_date, "end_date": end_date},
             "pulled_at": now_iso(),
             "source_mode": "live_mcp",
             "warnings": [],
         }
 
-    def fetch_dashboard(self) -> Dict[str, Any]:
-        payload = asyncio.run(self.fetch_live_payload())
+    def fetch_dashboard(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        *,
+        sp_campaign_ids: Optional[Iterable[str]] = None,
+        known_non_sp_campaign_ids: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        payload = asyncio.run(self.fetch_live_payload(start_date=start_date, end_date=end_date))
+        payload["sp_campaign_ids"] = list(sp_campaign_ids or [])
+        payload["known_non_sp_campaign_ids"] = list(known_non_sp_campaign_ids or [])
         return normalize_dashboard_payload(payload)
 
 

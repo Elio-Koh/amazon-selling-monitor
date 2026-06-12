@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
-from typing import Any, Dict
+from datetime import date
+from typing import Any, Dict, Iterable, Mapping
 
 import streamlit as st
 
 from src import lingxing_client
 from src.config import load_targets
+from src.date_windows import PRESETS, DateWindow, resolve_date_window, today_for_timezone
 from src.metrics import build_dashboard_summary
 
 
@@ -35,9 +38,17 @@ def money(value: Any, currency: str = "$") -> str:
 def number(value: Any) -> str:
     if value is None:
         return "-"
-    if isinstance(value, float) and not value.is_integer():
+    if isinstance(value, float) and value.is_integer():
+        return f"{value:,.0f}"
+    if isinstance(value, float):
         return f"{value:,.2f}"
     return f"{float(value):,.0f}"
+
+
+def safe_text(value: Any, fallback: str = "-") -> str:
+    if value in (None, "", [], {}):
+        return fallback
+    return str(value)
 
 
 def secrets_get(key: str, default: Any = None) -> Any:
@@ -74,7 +85,13 @@ def create_lingxing_client(server_url: str, asin: str, transport: str) -> Any:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def load_dashboard_data(force_refresh_key: int) -> Dict[str, Any]:
+def load_dashboard_data(
+    force_refresh_key: int,
+    start_date: str,
+    end_date: str,
+    sp_campaign_ids: tuple[str, ...] = (),
+    known_non_sp_campaign_ids: tuple[str, ...] = (),
+) -> Dict[str, Any]:
     del force_refresh_key
     server_url = secrets_get("LINGXING_MCP_URL")
     asin = secrets_get("ASIN", lingxing_client.DEFAULT_ASIN)
@@ -85,47 +102,125 @@ def load_dashboard_data(force_refresh_key: int) -> Dict[str, Any]:
                 server_url=str(server_url),
                 asin=str(asin),
                 transport=str(transport),
-            ).fetch_dashboard()
+            ).fetch_dashboard(
+                start_date=start_date,
+                end_date=end_date,
+                sp_campaign_ids=sp_campaign_ids,
+                known_non_sp_campaign_ids=known_non_sp_campaign_ids,
+            )
         except Exception as exc:
-            return lingxing_client.build_blocked_dashboard(
+            blocked = lingxing_client.build_blocked_dashboard(
                 asin=str(asin),
                 mode="live_blocked",
                 reason=(
-                    "Lingxing live pull failed. The configured LINGXING_MCP_URL is reachable "
-                    "from settings but did not complete an MCP session. "
+                    "Lingxing live pull failed. The configured LINGXING_MCP_URL did not complete "
+                    "an MCP session. "
                     f"Configured URL: {server_url}. Configured transport: {transport}. "
                     f"Error: {type(exc).__name__}: {exc}"
                 ),
             )
-    dashboard = lingxing_client.load_fixture_dashboard()
+            blocked["date_window"] = {"start_date": start_date, "end_date": end_date}
+            return blocked
+    dashboard = lingxing_client.load_fixture_dashboard(
+        sp_campaign_ids=sp_campaign_ids,
+        known_non_sp_campaign_ids=known_non_sp_campaign_ids,
+    )
+    dashboard["date_window"] = {"start_date": start_date, "end_date": end_date}
     dashboard["source_status"]["mode"] = "fixture_no_live_url"
     dashboard["source_status"]["warnings"].append("LINGXING_MCP_URL is not configured.")
     return dashboard
 
 
-def render_source_status(data: Dict[str, Any]) -> None:
+def inject_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .block-container { padding-top: 2.2rem; max-width: 1180px; }
+        div[data-testid="stMetric"] {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 14px 16px;
+            background: #ffffff;
+            min-height: 112px;
+        }
+        div[data-testid="stMetricLabel"] p { color: #4b5563; font-size: 0.88rem; }
+        div[data-testid="stMetricValue"] { color: #111827; }
+        .status-strip {
+            border: 1px solid #dbeafe;
+            border-radius: 8px;
+            padding: 12px 14px;
+            background: #f8fbff;
+            color: #1f2937;
+        }
+        .section-note { color: #6b7280; font-size: 0.9rem; }
+        .badge {
+            display: inline-block;
+            border-radius: 999px;
+            padding: 2px 8px;
+            background: #eef2ff;
+            color: #3730a3;
+            font-size: 0.78rem;
+            margin-left: 6px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_header(targets: Mapping[str, Any]) -> DateWindow:
+    timezone_name = str(targets.get("report_timezone") or "Asia/Shanghai")
+    anchor = today_for_timezone(timezone_name)
+    st.title("Amazon Selling Monitor")
+    st.caption(f"ASIN: {targets.get('asin', lingxing_client.DEFAULT_ASIN)} | Marketplace: {targets.get('marketplace', 'US')}")
+
+    cols = st.columns([1.4, 1, 1, 1])
+    preset = cols[0].selectbox("Date Window", PRESETS, index=1)
+    custom_start = cols[1].date_input("Start Date", anchor, disabled=preset != "Custom")
+    custom_end = cols[2].date_input("End Date", anchor, disabled=preset != "Custom")
+    if cols[3].button("Refresh Data", use_container_width=True):
+        st.session_state.refresh_counter = st.session_state.get("refresh_counter", 0) + 1
+        load_dashboard_data.clear()
+
+    return resolve_date_window(
+        preset,
+        anchor_date=anchor,
+        custom_start=_as_date(custom_start),
+        custom_end=_as_date(custom_end),
+    )
+
+
+def _as_date(value: Any) -> date:
+    if isinstance(value, date):
+        return value
+    return today_for_timezone()
+
+
+def render_source_status(data: Dict[str, Any], window: DateWindow) -> None:
     status = data["source_status"]
     mode = status["mode"]
+    partial_badge = '<span class="badge">partial day</span>' if window.is_partial else ""
     if mode == "live_mcp":
-        st.success(f"数据源：Lingxing 实时拉取。更新时间：{data['pulled_at']}")
+        body = f"Source: Lingxing live MCP. Window: {window.start_date} to {window.end_date}. Pulled at: {data['pulled_at']} {partial_badge}"
+        st.markdown(f'<div class="status-strip">{body}</div>', unsafe_allow_html=True)
     elif status.get("blocked"):
-        st.error(f"实时数据源不可用。模式：{mode}。检查时间：{data['pulled_at']}")
+        st.error(f"Live data unavailable. Mode: {mode}. Checked at: {data['pulled_at']}")
     elif mode.startswith("fixture"):
-        st.warning(f"当前使用样例数据。模式：{mode}。更新时间：{data['pulled_at']}")
+        st.warning(f"Using sample data. Mode: {mode}. Window: {window.start_date} to {window.end_date}. Updated at: {data['pulled_at']}")
     else:
-        st.info(f"数据源模式：{mode}。更新时间：{data['pulled_at']}")
+        st.info(f"Source mode: {mode}. Window: {window.start_date} to {window.end_date}. Updated at: {data['pulled_at']}")
 
     missing = status.get("missing_fields") or []
     warnings = status.get("warnings") or []
     if missing:
-        st.caption("缺失字段：" + "、".join(missing))
+        st.caption("Missing fields: " + ", ".join(missing))
     if warnings:
-        with st.expander("数据源提示", expanded=False):
+        with st.expander("Source notes", expanded=False):
             for warning in warnings:
                 st.write(f"- {warning}")
             if status.get("blocked"):
-                st.write("- 这个页面当前不会展示样例业务数据，避免把 fixture 误认为真实数据。")
-                st.write("- 请确认 Streamlit secrets 中的 `LINGXING_MCP_URL` 是可由 Streamlit 直接访问的 MCP/SSE 或 Streamable HTTP 端点，并且 `LINGXING_MCP_TRANSPORT` 与远端协议匹配。")
+                st.write("- This page does not show fixture business metrics while live data is blocked.")
+                st.write("- Check Streamlit secrets: `LINGXING_MCP_URL` and `LINGXING_MCP_TRANSPORT`.")
 
 
 def render_metric_row(summary: Dict[str, Any], currency: str) -> None:
@@ -136,52 +231,56 @@ def render_metric_row(summary: Dict[str, Any], currency: str) -> None:
     all_ads = advertising["all_ads"]
 
     cols = st.columns(6)
-    cols[0].metric("总销售额", money(sales["total_sales"], currency))
-    cols[1].metric("总订单", number(sales["total_orders"]))
-    cols[2].metric("SP 订单", number(sp_goal["orders"]), f"目标 {number(sp_goal['orders_min'])}-{number(sp_goal['orders_max'])}")
-    cols[3].metric("SP ACOS", percent(sp["acos"]), f"目标 {percent(sp_goal['target_acos'])}")
-    cols[4].metric("SP 花费", money(sp["spend"], currency), f"预算 {money(sp_goal['daily_budget'], currency)}")
-    cols[5].metric("全量广告 TACOS", percent(all_ads["tacos"]))
+    cols[0].metric("Total Sales", money(sales["total_sales"], currency))
+    cols[1].metric("Total Orders", number(sales["total_orders"]))
+    cols[2].metric("SP Orders", number(sp_goal["orders"]), f"Target {number(sp_goal['orders_min'])}-{number(sp_goal['orders_max'])}")
+    cols[3].metric("SP ACOS", percent(sp["acos"]), f"Target {percent(sp_goal['target_acos'])}")
+    cols[4].metric("SP Spend", money(sp["spend"], currency), f"Budget {money(sp_goal['window_budget'], currency)}")
+    cols[5].metric("All-Ads TACOS", percent(all_ads["tacos"]))
 
 
-def render_overview(data: Dict[str, Any], summary: Dict[str, Any], currency: str) -> None:
+def render_overview(data: Dict[str, Any], summary: Dict[str, Any], currency: str, window: DateWindow) -> None:
     render_metric_row(summary, currency)
     st.divider()
 
     sp_goal = summary["sp_goal"]
     all_ads = summary["advertising"]["all_ads"]
     inventory = data["context"]["inventory"]
+    listing = data["context"]["listing"]
 
     cols = st.columns(3)
-    cols[0].subheader("SP 目标进度")
-    cols[0].progress(min(float(sp_goal["orders_progress_max"] or 0), 1.0), text="SP 订单目标上限进度")
-    cols[0].write(f"订单状态：`{sp_goal['orders_status']}`")
-    cols[0].write(f"预算使用率：{percent(sp_goal['budget_used_pct'])}")
-    cols[0].write(f"ACOS 差距：{percent(sp_goal['acos_delta'])}")
+    with cols[0]:
+        st.subheader("SP Goal Pace")
+        st.progress(min(float(sp_goal["orders_progress_max"] or 0), 1.0), text=f"Order target pace for {window.label}")
+        st.write(f"Order status: `{sp_goal['orders_status']}`")
+        st.write(f"Budget usage: {percent(sp_goal['budget_used_pct'])}")
+        st.write(f"ACOS gap: {percent(sp_goal['acos_delta'])}")
 
-    cols[1].subheader("全量广告")
-    cols[1].write(f"花费：{money(all_ads['spend'], currency)}")
-    cols[1].write(f"销售额：{money(all_ads['sales'], currency)}")
-    cols[1].write(f"ACOS：{percent(all_ads['acos'])}")
-    cols[1].write(f"ROAS：{number(all_ads['roas'])}")
+    with cols[1]:
+        st.subheader("All Advertising")
+        st.write(f"Spend: {money(all_ads['spend'], currency)}")
+        st.write(f"Sales: {money(all_ads['sales'], currency)}")
+        st.write(f"ACOS: {percent(all_ads['acos'])}")
+        st.write(f"ROAS: {number(all_ads['roas'])}")
 
-    cols[2].subheader("库存/Listing")
-    cols[2].write(f"FBA 可售：{number(inventory.get('fba_fulfillable'))}")
-    cols[2].write(f"可售天数：{number(inventory.get('days_of_supply'))}")
-    cols[2].write(f"断货风险：`{inventory.get('stockout_risk', '-')}`")
-    cols[2].write(f"Listing：{data['context']['listing'].get('title', '-')}")
+    with cols[2]:
+        st.subheader("Inventory & Listing")
+        st.write(f"FBA fulfillable: {number(inventory.get('fba_fulfillable'))}")
+        st.write(f"Days of supply: {number(inventory.get('days_of_supply'))}")
+        st.write(f"Stockout risk: `{safe_text(inventory.get('stockout_risk'))}`")
+        st.write(f"Price: {safe_text(listing.get('price_display') or listing.get('price'))}")
 
 
 def render_sp_ads(data: Dict[str, Any], summary: Dict[str, Any], currency: str) -> None:
     sp = summary["advertising"]["sp"]
     cols = st.columns(6)
-    cols[0].metric("SP 花费", money(sp["spend"], currency))
-    cols[1].metric("SP 销售额", money(sp["sales"], currency))
-    cols[2].metric("SP 订单", number(sp["orders"]))
+    cols[0].metric("SP Spend", money(sp["spend"], currency))
+    cols[1].metric("SP Sales", money(sp["sales"], currency))
+    cols[2].metric("SP Orders", number(sp["orders"]))
     cols[3].metric("SP ACOS", percent(sp["acos"]))
     cols[4].metric("SP CVR", percent(sp["cvr"]))
     cols[5].metric("SP CPA", money(sp["cpa"], currency))
-    st.dataframe(data["sp_campaigns"], use_container_width=True)
+    st.dataframe(_campaign_table(data["sp_campaigns"]), use_container_width=True, hide_index=True)
 
 
 def render_all_ads(data: Dict[str, Any], summary: Dict[str, Any], currency: str) -> None:
@@ -190,10 +289,10 @@ def render_all_ads(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
     for ad_product, metrics in sorted(by_product.items()):
         rows.append(
             {
-                "广告类型": ad_product,
-                "花费": metrics["spend"],
-                "销售额": metrics["sales"],
-                "订单": metrics["orders"],
+                "Ad Product": ad_product,
+                "Spend": metrics["spend"],
+                "Sales": metrics["sales"],
+                "Orders": metrics["orders"],
                 "ACOS": metrics["acos"],
                 "ROAS": metrics["roas"],
                 "CPC": metrics["cpc"],
@@ -201,51 +300,176 @@ def render_all_ads(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
                 "CVR": metrics["cvr"],
             }
         )
-    st.dataframe(rows, use_container_width=True)
-    st.subheader("Campaign 明细")
-    st.dataframe(data["campaigns"], use_container_width=True)
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.subheader("Campaign Detail")
+    st.dataframe(_campaign_table(data["campaigns"]), use_container_width=True, hide_index=True)
 
 
-def render_context(data: Dict[str, Any]) -> None:
-    st.subheader("Listing / 库存")
-    cols = st.columns(2)
-    cols[0].json(data["context"]["listing"])
-    cols[1].json(data["context"]["inventory"])
-    st.subheader("市场 / 关键词 / 行动历史")
-    st.json(
+def _campaign_table(campaigns: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    for row in campaigns:
+        rows.append(
+            {
+                "Campaign ID": row.get("campaign_id"),
+                "Campaign Name": row.get("campaign_name"),
+                "Type": row.get("campaign_type") or row.get("targeting_type"),
+                "Status": row.get("status"),
+                "Ad Product": row.get("ad_product"),
+                "Scope Evidence": row.get("ad_scope_evidence"),
+                "Spend": row.get("spend"),
+                "Sales": row.get("sales"),
+                "Orders": row.get("orders"),
+                "Clicks": row.get("clicks"),
+                "Impressions": row.get("impressions"),
+            }
+        )
+    return rows
+
+
+def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str) -> None:
+    context = data["context"]
+    listing = context.get("listing", {})
+    inventory = context.get("inventory", {})
+    market = context.get("market", {})
+    keywords = context.get("keyword_market", [])
+    action_history = context.get("action_history", [])
+    sales = data.get("sales", {})
+    all_ads = summary["advertising"]["all_ads"]
+    sp = summary["advertising"]["sp"]
+
+    st.subheader("Context Quality")
+    render_key_values(
         {
-            "market": data["context"]["market"],
-            "keyword_market": data["context"]["keyword_market"],
-            "action_history": data["context"]["action_history"],
+            "Source": data["source_status"].get("mode"),
+            "Pulled At": data.get("pulled_at"),
+            "Missing Fields": ", ".join(data["source_status"].get("missing_fields") or []) or "None",
+            "Warnings": len(data["source_status"].get("warnings") or []),
         }
     )
 
+    cols = st.columns(2)
+    with cols[0]:
+        st.subheader("Business & Profit")
+        render_key_values(
+            {
+                "Average Selling Price": money(_safe_float(sales.get("total_sales")) / _safe_float(sales.get("total_orders")), currency)
+                if _safe_float(sales.get("total_orders")) else "-",
+                "Target ACOS": percent(summary["sp_goal"]["target_acos"]),
+                "SP ACOS": percent(sp["acos"]),
+                "Break-even ACOS": safe_text(context.get("business_financial", {}).get("break_even_acos")),
+                "Contribution Margin": safe_text(context.get("business_financial", {}).get("contribution_margin")),
+            }
+        )
+
+    with cols[1]:
+        st.subheader("Inventory & Logistics")
+        render_key_values(
+            {
+                "FBA Fulfillable": number(inventory.get("fba_fulfillable")),
+                "Days of Supply": number(inventory.get("days_of_supply")),
+                "Inbound Quantity": number(inventory.get("inbound_quantity")),
+                "Inbound ETA": safe_text(inventory.get("inbound_eta")),
+                "Stockout Risk": safe_text(inventory.get("stockout_risk")),
+                "Delivery Promise": safe_text(inventory.get("own_delivery_promise")),
+            }
+        )
+
+    cols = st.columns(2)
+    with cols[0]:
+        st.subheader("Listing & Offer")
+        render_key_values(
+            {
+                "Title": safe_text(listing.get("title")),
+                "Price": safe_text(listing.get("price_display") or listing.get("price")),
+                "Coupon": safe_text(listing.get("coupon_present")),
+                "Deal": safe_text(listing.get("deal_present")),
+                "Rating": safe_text(listing.get("rating")),
+                "Reviews": number(listing.get("review_count")),
+                "Fulfillment": safe_text(listing.get("fulfillment_method")),
+            }
+        )
+
+    with cols[1]:
+        st.subheader("Sales Trend")
+        render_key_values(
+            {
+                "Window Sales": money(sales.get("total_sales"), currency),
+                "Window Orders": number(sales.get("total_orders")),
+                "Window Units": number(sales.get("total_units")),
+                "All-Ads Spend": money(all_ads.get("spend"), currency),
+                "All-Ads TACOS": percent(all_ads.get("tacos")),
+                "Ad Order Share": percent(all_ads.get("order_share")),
+            }
+        )
+
+    st.subheader("Market & Competitors")
+    if market:
+        render_key_values(
+            {
+                "Category CVR": safe_text(market.get("category_average_cvr")),
+                "Seasonality": safe_text(market.get("seasonality")),
+                "Off-Amazon Activity": safe_text(market.get("off_amazon_activity")),
+            }
+        )
+    else:
+        st.caption("No market or competitor context is available in the current pull.")
+
+    st.subheader("Keyword & Rank")
+    if keywords:
+        st.dataframe(keywords, use_container_width=True)
+    else:
+        st.caption("No keyword or rank context is available in the current pull.")
+
+    st.subheader("Action History")
+    if action_history:
+        st.dataframe(action_history, use_container_width=True)
+    else:
+        st.caption("No prior action history is available in the current pull.")
+
+
+def render_key_values(values: Mapping[str, Any]) -> None:
+    rows = [{"Metric": key, "Value": safe_text(value)} for key, value in values.items()]
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
 
 def render_details(data: Dict[str, Any]) -> None:
-    st.subheader("广告口径判定")
-    st.dataframe(data["ad_scope_resolutions"], use_container_width=True)
+    st.subheader("Ad Scope Evidence")
+    st.dataframe(data["ad_scope_resolutions"], use_container_width=True, hide_index=True)
+    st.subheader("Raw Snapshot")
     st.download_button(
-        "下载当前规范化数据 JSON",
-        data=str(data),
-        file_name=f"{data['asin']}_dashboard_snapshot.txt",
+        "Download normalized snapshot JSON",
+        data=json.dumps(data, ensure_ascii=False, indent=2, default=str),
+        file_name=f"{data['asin']}_dashboard_snapshot.json",
+        mime="application/json",
     )
+    with st.expander("Show normalized JSON", expanded=False):
+        st.json(data)
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def main() -> None:
+    inject_css()
     targets = load_targets()
-    st.title("Amazon Selling Monitor")
-    st.caption(f"ASIN: {targets.get('asin', lingxing_client.DEFAULT_ASIN)} | 中文实时经营看板")
-
     if "refresh_counter" not in st.session_state:
         st.session_state.refresh_counter = 0
-    if st.button("刷新最新数据"):
-        st.session_state.refresh_counter += 1
-        load_dashboard_data.clear()
 
-    with st.spinner("正在拉取最新数据..."):
-        data = load_dashboard_data(st.session_state.refresh_counter)
+    window = render_header(targets)
+    with st.spinner("Pulling latest data..."):
+        data = load_dashboard_data(
+            st.session_state.refresh_counter,
+            window.start_date,
+            window.end_date,
+            tuple(str(item) for item in targets.get("sp_campaign_ids", []) or []),
+            tuple(str(item) for item in targets.get("known_non_sp_campaign_ids", []) or []),
+        )
 
-    render_source_status(data)
+    render_source_status(data, window)
     currency = "$" if data["sales"].get("currency", "USD") == "USD" else ""
     summary = build_dashboard_summary(
         total_sales=data["sales"]["total_sales"],
@@ -253,17 +477,18 @@ def main() -> None:
         total_units=data["sales"]["total_units"],
         ad_summary=data["advertising"],
         targets=targets,
+        window_days=window.days,
     )
 
-    tabs = st.tabs(["总览", "SP 广告", "全量广告", "经营上下文", "明细数据"])
+    tabs = st.tabs(["Operating Overview", "SP Ads", "Advertising Diagnostics", "Business Context", "Raw Data"])
     with tabs[0]:
-        render_overview(data, summary, currency)
+        render_overview(data, summary, currency, window)
     with tabs[1]:
         render_sp_ads(data, summary, currency)
     with tabs[2]:
         render_all_ads(data, summary, currency)
     with tabs[3]:
-        render_context(data)
+        render_context(data, summary, currency)
     with tabs[4]:
         render_details(data)
 

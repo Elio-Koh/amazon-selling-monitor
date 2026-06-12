@@ -72,7 +72,7 @@ def install_fake_mcp(monkeypatch, *, streamable_initialize_error=None):
     return calls
 
 
-async def fake_call_known_tools(session, tool_names):
+async def fake_call_known_tools(session, tool_names, **kwargs):
     return {"tool_names": list(tool_names)}
 
 
@@ -160,6 +160,74 @@ def test_call_known_tools_uses_default_date_range_for_current_lingxing_tools(mon
     assert ("get_orders_B0GXYYZPBW", {"start_date": "2026-06-11", "end_date": "2026-06-11"}) in calls
     assert ("get_asin_sales_B0GXYYZPBW", {"start_date": "2026-06-11", "end_date": "2026-06-11"}) in calls
     assert ("list_campaigns_with_date_and_portfolio_with_config_B0GXYYZPBW", {"start_date": "2026-06-11", "end_date": "2026-06-11", "page": 1, "length": 50}) in calls
+
+
+def test_call_known_tools_uses_selected_date_window():
+    calls = []
+
+    class FakeSession:
+        async def call_tool(self, name, args):
+            calls.append((name, args))
+            if name.startswith("get_orders"):
+                body = {"total_orders": 3, "total_sale_total": 119.97, "currency_code": "USD"}
+            elif name.startswith("get_asin_sales"):
+                body = {"total_units": 3}
+            elif name.startswith("list_campaigns_with_date"):
+                body = {"campaigns": [{"campaign_id": "c1", "campaign_type": "manual"}]}
+            else:
+                body = {"listing": {"title": "Sample listing"}}
+            return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(body))])
+
+    tool_names = [
+        "list_campaigns_with_date_and_portfolio_with_config_B0GXYYZPBW",
+        "get_product_listing_B0GXYYZPBW",
+        "get_asin_sales_B0GXYYZPBW",
+        "get_orders_B0GXYYZPBW",
+    ]
+    client = LingxingClient("http://example.test/lingxing_config_B0GXYYZPBW/", asin="B0GXYYZPBW")
+
+    payload = asyncio.run(
+        client._call_known_tools(
+            FakeSession(),
+            tool_names,
+            start_date="2026-06-05",
+            end_date="2026-06-11",
+        )
+    )
+
+    assert payload["date_window"] == {"start_date": "2026-06-05", "end_date": "2026-06-11"}
+    assert ("get_orders_B0GXYYZPBW", {"start_date": "2026-06-05", "end_date": "2026-06-11"}) in calls
+    assert ("get_asin_sales_B0GXYYZPBW", {"start_date": "2026-06-05", "end_date": "2026-06-11"}) in calls
+    assert ("list_campaigns_with_date_and_portfolio_with_config_B0GXYYZPBW", {"start_date": "2026-06-05", "end_date": "2026-06-11", "page": 1, "length": 50}) in calls
+
+
+def test_normalize_dashboard_payload_handles_lingxing_string_metrics_and_manual_sp():
+    payload = {
+        "orders": {"total_orders": "1", "total_sale_total": "39.99", "currency_code": "USD"},
+        "asin_sales": {"total_units": "1"},
+        "campaigns": [
+            {
+                "campaign_id": "173844737302109",
+                "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+                "campaign_type": "manual",
+                "spends": "12.46",
+                "sales": "39.99",
+                "orders": "1",
+                "clicks": "6",
+                "impressions": "1402",
+            },
+        ],
+        "pulled_at": "2026-06-12T08:00:00Z",
+        "date_window": {"start_date": "2026-06-11", "end_date": "2026-06-11"},
+    }
+
+    normalized = normalize_dashboard_payload(payload)
+
+    assert normalized["date_window"]["start_date"] == "2026-06-11"
+    assert normalized["campaigns"][0]["spend"] == 12.46
+    assert normalized["campaigns"][0]["ad_scope_status"] == "sp_verified"
+    assert normalized["advertising"]["sp"]["spend"] == 12.46
+    assert normalized["advertising"]["sp"]["orders"] == 1
 
 
 def test_normalize_dashboard_payload_extracts_sales_and_campaigns():

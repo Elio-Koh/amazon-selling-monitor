@@ -2,6 +2,9 @@ product:
   asin: B0GXYYZPBW
   marketplace: US
   currency: USD
+  report_timezone: Asia/Shanghai
+  sp_campaign_ids: []
+  known_non_sp_campaign_ids: []
   sp_target_acos: 0.4993
   sp_daily_budget_initial: 300
   sp_daily_budget_later: 600

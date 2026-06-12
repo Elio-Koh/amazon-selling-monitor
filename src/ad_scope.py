@@ -40,16 +40,21 @@ class AdScopeResolver:
     def __init__(
         self,
         whitelist: Optional[Iterable[str]] = None,
+        known_non_sp: Optional[Iterable[str]] = None,
         route_scope: str = "",
     ) -> None:
         self.whitelist: Set[str] = {
             str(item).strip() for item in (whitelist or []) if str(item).strip()
+        }
+        self.known_non_sp: Set[str] = {
+            str(item).strip() for item in (known_non_sp or []) if str(item).strip()
         }
         self.route_scope = route_scope
 
     def resolve(self, campaign: Mapping[str, object]) -> AdScopeResolution:
         campaign_id = str(campaign.get("campaign_id") or campaign.get("id") or "").strip()
         campaign_name = str(campaign.get("campaign_name") or campaign.get("name") or "").strip()
+        campaign_type = str(campaign.get("campaign_type") or "").strip().lower()
         targeting_type = str(campaign.get("targeting_type") or "").strip().lower()
         raw_ad_product = str(
             campaign.get("ad_product_type")
@@ -58,6 +63,15 @@ class AdScopeResolver:
             or ""
         ).strip().upper()
 
+        if campaign_id and campaign_id in self.known_non_sp:
+            return AdScopeResolution(
+                campaign_id,
+                campaign_name,
+                targeting_type,
+                "excluded",
+                "non_sp",
+                "campaign_id_non_sp_list",
+            )
         if raw_ad_product in {"SB", "SBV", "SD"}:
             return AdScopeResolution(
                 campaign_id,
@@ -85,6 +99,15 @@ class AdScopeResolver:
                 "sp_verified",
                 "SP",
                 "explicit_sp_field",
+            )
+        if campaign_type in {"auto", "manual"} or targeting_type in {"auto", "manual"}:
+            return AdScopeResolution(
+                campaign_id,
+                campaign_name,
+                targeting_type or campaign_type,
+                "sp_verified",
+                "SP",
+                "campaign_type_auto_manual",
             )
         if campaign_id and campaign_id in self.whitelist:
             return AdScopeResolution(
