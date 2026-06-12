@@ -18,9 +18,12 @@ streamlit run app.py
 ```toml
 ASIN = "B0GXYYZPBW"
 LINGXING_MCP_URL = "http://34.143.132.97:8368/lingxing_config_B0GXYYZPBW/"
+LINGXING_MCP_TRANSPORT = "streamable_http"
 ```
 
-`LINGXING_MCP_URL` 必须是 Streamlit Cloud 可以直接访问并完成 MCP 会话的端点。Codex 本地配置里的 MCP config URL 不一定等同于公开可用的 SSE/Streamable HTTP endpoint；如果该地址返回 404 或 MCP 握手失败，页面会显示“实时数据源不可用”，不会继续展示样例业务数字。
+`LINGXING_MCP_URL` 必须是 Streamlit Cloud 可以直接访问并完成 MCP 会话的端点。当前 Lingxing FastMCP 服务使用 Streamable HTTP，建议把 `LINGXING_MCP_TRANSPORT` 显式设为 `streamable_http`；不配置时应用会先尝试 Streamable HTTP，再回退到 SSE。Codex 本地配置里的 MCP config URL 不一定等同于公开可用的 MCP endpoint；如果该地址返回 404 或 MCP 握手失败，页面会显示“实时数据源不可用”，不会继续展示样例业务数字。
+
+实时 MCP 模式需要 Python 3.10+ 才会安装 `mcp>=1.9`。本仓库的 `runtime.txt` 已配置 `python-3.11.9`；如果本地旧 `.venv` 是 Python 3.8，只能跑普通单元测试，不能跑 live MCP 拉数。
 
 ## 当前目标
 

@@ -51,9 +51,14 @@ def load_dashboard_data(force_refresh_key: int) -> Dict[str, Any]:
     del force_refresh_key
     server_url = secrets_get("LINGXING_MCP_URL")
     asin = secrets_get("ASIN", DEFAULT_ASIN)
+    transport = secrets_get("LINGXING_MCP_TRANSPORT", "auto")
     if server_url:
         try:
-            return LingxingClient(server_url=str(server_url), asin=str(asin)).fetch_dashboard()
+            return LingxingClient(
+                server_url=str(server_url),
+                asin=str(asin),
+                transport=str(transport),
+            ).fetch_dashboard()
         except Exception as exc:
             return build_blocked_dashboard(
                 asin=str(asin),
@@ -61,7 +66,8 @@ def load_dashboard_data(force_refresh_key: int) -> Dict[str, Any]:
                 reason=(
                     "Lingxing live pull failed. The configured LINGXING_MCP_URL is reachable "
                     "from settings but did not complete an MCP session. "
-                    f"Configured URL: {server_url}. Error: {type(exc).__name__}: {exc}"
+                    f"Configured URL: {server_url}. Configured transport: {transport}. "
+                    f"Error: {type(exc).__name__}: {exc}"
                 ),
             )
     dashboard = load_fixture_dashboard()
@@ -92,7 +98,7 @@ def render_source_status(data: Dict[str, Any]) -> None:
                 st.write(f"- {warning}")
             if status.get("blocked"):
                 st.write("- 这个页面当前不会展示样例业务数据，避免把 fixture 误认为真实数据。")
-                st.write("- 请确认 Streamlit secrets 中的 `LINGXING_MCP_URL` 是可由 Streamlit 直接访问的 MCP/SSE 或 Streamable HTTP 端点，而不是仅供 Codex 注册使用的 config URL。")
+                st.write("- 请确认 Streamlit secrets 中的 `LINGXING_MCP_URL` 是可由 Streamlit 直接访问的 MCP/SSE 或 Streamable HTTP 端点，并且 `LINGXING_MCP_TRANSPORT` 与远端协议匹配。")
 
 
 def render_metric_row(summary: Dict[str, Any], currency: str) -> None:

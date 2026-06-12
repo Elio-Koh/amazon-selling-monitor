@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 from .ad_scope import AdScopeResolver, split_campaigns_by_scope
 from .metrics import summarize_advertising
@@ -19,6 +19,11 @@ from .metrics import summarize_advertising
 
 DEFAULT_ASIN = "B0GXYYZPBW"
 DEFAULT_FIXTURE_PATH = Path("data/fixtures/sample_dashboard_payload.json")
+VALID_MCP_TRANSPORTS = {"auto", "streamable_http", "sse"}
+
+
+class MCPTransportError(RuntimeError):
+    """Raised when a transport cannot connect, initialize, or list tools."""
 
 
 def now_iso() -> str:
@@ -189,29 +194,94 @@ class LingxingClient:
     network path that can reach the configured MCP server URL.
     """
 
-    def __init__(self, server_url: str, asin: str = DEFAULT_ASIN) -> None:
-        self.server_url = server_url.rstrip("/")
+    def __init__(self, server_url: str, asin: str = DEFAULT_ASIN, transport: str = "auto") -> None:
+        self.server_url = _normalize_mcp_url(server_url)
         self.asin = asin
+        self.transport = transport.strip().lower()
+        if self.transport not in VALID_MCP_TRANSPORTS:
+            raise ValueError(
+                f"Unsupported Lingxing MCP transport: {transport}. "
+                f"Expected one of: {', '.join(sorted(VALID_MCP_TRANSPORTS))}."
+            )
 
     async def fetch_live_payload(self) -> Dict[str, Any]:
+        if self.transport == "auto":
+            try:
+                return await self._fetch_with_transport("streamable_http")
+            except MCPTransportError as streamable_error:
+                try:
+                    return await self._fetch_with_transport("sse")
+                except Exception as sse_error:
+                    raise RuntimeError(
+                        "Lingxing MCP auto transport failed. "
+                        f"streamable_http: {streamable_error}; "
+                        f"sse: {type(sse_error).__name__}: {sse_error}"
+                    ) from sse_error
+        return await self._fetch_with_transport(self.transport)
+
+    async def _fetch_with_transport(self, transport: str) -> Dict[str, Any]:
+        if transport == "streamable_http":
+            return await self._fetch_streamable_http()
+        if transport == "sse":
+            return await self._fetch_sse()
+        raise ValueError(f"Unsupported Lingxing MCP transport: {transport}")
+
+    async def _fetch_streamable_http(self) -> Dict[str, Any]:
+        ClientSession = _load_client_session()
         try:
-            from mcp import ClientSession  # type: ignore
+            from mcp.client.streamable_http import streamable_http_client  # type: ignore
+        except Exception as exc:  # pragma: no cover - depends on deployment deps
+            raise MCPTransportError("streamable_http transport is unavailable in the installed mcp package") from exc
+
+        initialized = False
+        try:
+            async with streamable_http_client(self.server_url) as streams:  # pragma: no cover
+                read_stream, write_stream = streams[0], streams[1]
+                async with ClientSession(read_stream, write_stream) as session:
+                    tool_names = await _initialize_and_list_tools(session, "streamable_http")
+                    initialized = True
+                    return await self._call_known_tools(session, tool_names)
+        except Exception as exc:
+            if initialized:
+                raise
+            if isinstance(exc, MCPTransportError):
+                raise
+            raise MCPTransportError(f"streamable_http transport failed before tool calls: {exc}") from exc
+
+    async def _fetch_sse(self) -> Dict[str, Any]:
+        ClientSession = _load_client_session()
+        try:
             from mcp.client.sse import sse_client  # type: ignore
         except Exception as exc:  # pragma: no cover - depends on deployment deps
-            raise RuntimeError(
-                "Live Lingxing MCP mode requires the optional mcp package. "
-                "Install project requirements in the deployment environment."
-            ) from exc
+            raise MCPTransportError("sse transport is unavailable in the installed mcp package") from exc
 
-        async with sse_client(self.server_url) as streams:  # pragma: no cover
-            async with ClientSession(*streams) as session:
-                await session.initialize()
-                tools = await session.list_tools()
-                tool_names = [tool.name for tool in tools.tools]
-                return await self._call_known_tools(session, tool_names)
+        initialized = False
+        try:
+            async with sse_client(self.server_url) as streams:  # pragma: no cover
+                async with ClientSession(*streams) as session:
+                    tool_names = await _initialize_and_list_tools(session, "sse")
+                    initialized = True
+                    return await self._call_known_tools(session, tool_names)
+        except Exception as exc:
+            if initialized:
+                raise
+            if isinstance(exc, MCPTransportError):
+                raise
+            raise MCPTransportError(f"sse transport failed before tool calls: {exc}") from exc
 
     async def _call_known_tools(self, session: Any, tool_names: Iterable[str]) -> Dict[str, Any]:
         names = list(tool_names)
+        start_date, end_date = _default_report_dates()
+        dated_args = {
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+        campaign_args = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "page": 1,
+            "length": 50,
+        }
 
         async def call_first(fragments: Iterable[str], args: Mapping[str, Any]) -> Any:
             for name in names:
@@ -221,10 +291,12 @@ class LingxingClient:
                     return _mcp_result_to_json(result)
             return {}
 
-        orders = await call_first(("get_orders", self.asin), {"asin": self.asin})
-        asin_sales = await call_first(("get_asin_sales", self.asin), {"asin": self.asin})
-        campaigns = await call_first(("campaign",), {"asin": self.asin})
-        listing = await call_first(("listing",), {"asin": self.asin})
+        orders = await call_first(("get_orders", self.asin), dated_args)
+        asin_sales = await call_first(("get_asin_sales", self.asin), dated_args)
+        campaigns = await call_first(("list_campaigns_with_date", self.asin), campaign_args)
+        if not campaigns:
+            campaigns = await call_first(("campaign",), campaign_args)
+        listing = await call_first(("listing", self.asin), {"asin": self.asin})
 
         if isinstance(campaigns, Mapping):
             campaign_rows = campaigns.get("campaigns") or campaigns.get("data") or []
@@ -259,3 +331,45 @@ def _mcp_result_to_json(result: Any) -> Any:
             except json.JSONDecodeError:
                 return {"raw_text": text}
     return result
+
+
+def _load_client_session() -> Any:
+    try:
+        from mcp import ClientSession  # type: ignore
+    except Exception as exc:  # pragma: no cover - depends on deployment deps
+        raise RuntimeError(
+            "Live Lingxing MCP mode requires the optional `mcp` package. "
+            "Install project requirements in a Python 3.10+ environment."
+        ) from exc
+    return ClientSession
+
+
+async def _initialize_and_list_tools(session: Any, transport: str) -> Iterable[str]:
+    try:
+        await session.initialize()
+        tools = await session.list_tools()
+    except Exception as exc:
+        raise MCPTransportError(f"{transport} transport failed during MCP initialize/list_tools: {exc}") from exc
+    return [tool.name for tool in tools.tools]
+
+
+def _normalize_mcp_url(server_url: str) -> str:
+    url = server_url.strip()
+    if not url:
+        raise ValueError("Lingxing MCP server_url cannot be empty.")
+    fastmcp_config_markers = (
+        "/lingxing_config_",
+        "/xingshang_config_",
+        "/xingshang_advertiser_config_",
+        "/xingshang_sb_config_",
+        "/luckee_config_",
+    )
+    if not url.endswith("/") and any(marker in url for marker in fastmcp_config_markers):
+        return f"{url}/"
+    return url
+
+
+def _default_report_dates() -> Tuple[str, str]:
+    report_date = datetime.now(timezone.utc).date() - timedelta(days=1)
+    value = report_date.isoformat()
+    return value, value
