@@ -66,6 +66,54 @@ def parse_int(value: Any) -> Optional[int]:
     return int(match.group(1).replace(",", "")) if match else None
 
 
+def parse_rank_items(value: Any) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+
+    def add_item(rank: Optional[int], category: Optional[str], source_text: Optional[str] = None) -> None:
+        if rank is None or not category:
+            return
+        normalized_category = category.strip(" .:-")
+        if not normalized_category:
+            return
+        item = {"rank": rank, "category": normalized_category}
+        if source_text:
+            item["source_text"] = source_text
+        if item not in items:
+            items.append(item)
+
+    def parse_text(text: Optional[str]) -> None:
+        if not text:
+            return
+        matches = list(re.finditer(r"#?\s*([0-9][0-9,]*)\s+in\s+([^#;\n|]+)", text, flags=re.IGNORECASE))
+        for match in matches:
+            add_item(int(match.group(1).replace(",", "")), match.group(2), text)
+
+    def parse_value(raw: Any) -> None:
+        if raw is None:
+            return
+        if isinstance(raw, list):
+            for child in raw:
+                parse_value(child)
+            return
+        if isinstance(raw, Mapping):
+            rank = parse_int(raw.get("rank") or raw.get("bsr_rank") or raw.get("position") or raw.get("value"))
+            category = first_text(
+                raw.get("category")
+                or raw.get("categoryName")
+                or raw.get("category_name")
+                or raw.get("name")
+                or raw.get("title")
+                or raw.get("label")
+            )
+            add_item(rank, category, first_text(raw.get("text")))
+            parse_text(first_text(raw.get("text") or raw.get("display") or raw.get("bestSellersRank")))
+            return
+        parse_text(first_text(raw))
+
+    parse_value(value)
+    return items
+
+
 def parse_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -107,6 +155,7 @@ def normalize_public_listing(product: Mapping[str, Any], *, source: str, zipcode
     captured_at = now_iso()
     price_display = first_text(product.get("price") or product.get("price_display"))
     list_price_display = first_text(product.get("strikethroughPrice") or product.get("list_price_display"))
+    rank_payload = product.get("bestSellersRankItems") or product.get("bestSellersRank") or product.get("best_sellers_rank")
     coupon = first_text(product.get("coupon"))
     badge = first_text(product.get("badge")) or ""
     images = [
@@ -138,6 +187,7 @@ def normalize_public_listing(product: Mapping[str, Any], *, source: str, zipcode
         "category_id": first_text(product.get("category_id")),
         "category_name": first_text(product.get("category_name")),
         "best_sellers_rank": first_text(product.get("bestSellersRank") or product.get("best_sellers_rank")),
+        "best_sellers_rank_items": parse_rank_items(rank_payload),
         "delivery_promise": normalize_delivery(
             product.get("deliveryTime")
             or product.get("delivery")
@@ -186,8 +236,97 @@ def _category_keyword(listing: Mapping[str, Any], keywords: List[str], configure
     return keywords[0] if keywords else None
 
 
+def _category_rank_labels(listing: Mapping[str, Any], keywords: List[str], configured: Optional[str] = None) -> List[Dict[str, str]]:
+    labels: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+
+    def add(label: Optional[str], level: str) -> None:
+        text = first_text(label)
+        if not text:
+            return
+        key = text.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        labels.append({"label": text, "rank_level": level})
+
+    rank_items = listing.get("best_sellers_rank_items") if isinstance(listing.get("best_sellers_rank_items"), list) else []
+    if len(rank_items) > 1:
+        add(rank_items[0].get("category"), "major")
+        add(rank_items[-1].get("category"), "leaf")
+    elif len(rank_items) == 1:
+        add(rank_items[0].get("category"), "leaf")
+    else:
+        add(listing.get("category_name"), "leaf")
+
+    configured_text = first_text(configured)
+    if configured_text:
+        add(configured_text, "configured")
+    if not labels and keywords:
+        add(keywords[0], "configured")
+    return labels
+
+
 def _row_rank(row: Mapping[str, Any], fallback: int) -> int:
     return parse_int(row.get("rank") or row.get("bsr_rank") or row.get("position") or row.get("index")) or fallback
+
+
+def _set_own_category_rank(
+    own_rank: Dict[str, Any],
+    *,
+    metric: str,
+    rank_level: str,
+    rank: int,
+    category_label: str,
+    source: str,
+) -> None:
+    display_level = rank_level if rank_level in {"major", "leaf"} else "leaf"
+    prefix = f"own_{metric}_{display_level}"
+    if rank_level == "configured" and own_rank.get(f"{prefix}_rank") is not None:
+        return
+    own_rank.update(
+        {
+            f"{prefix}_rank": rank,
+            f"{prefix}_category": category_label,
+            f"{prefix}_source": source,
+        }
+    )
+
+
+def _own_bsr_ranks_from_listing(listing: Mapping[str, Any]) -> Dict[str, Any]:
+    own_rank: Dict[str, Any] = {}
+    rank_items = listing.get("best_sellers_rank_items") if isinstance(listing.get("best_sellers_rank_items"), list) else []
+    if len(rank_items) > 1:
+        major = rank_items[0]
+        leaf = rank_items[-1]
+        if major.get("category") != leaf.get("category"):
+            _set_own_category_rank(
+                own_rank,
+                metric="bsr",
+                rank_level="major",
+                rank=int(major["rank"]),
+                category_label=str(major["category"]),
+                source="pangolin:amzProductDetail",
+            )
+        _set_own_category_rank(
+            own_rank,
+            metric="bsr",
+            rank_level="leaf",
+            rank=int(leaf["rank"]),
+            category_label=str(leaf["category"]),
+            source="pangolin:amzProductDetail",
+        )
+    elif len(rank_items) == 1:
+        leaf = rank_items[0]
+        _set_own_category_rank(
+            own_rank,
+            metric="bsr",
+            rank_level="leaf",
+            rank=int(leaf["rank"]),
+            category_label=str(leaf["category"]),
+            source="pangolin:amzProductDetail",
+        )
+    return own_rank
 
 
 def _normalize_category_rows(
@@ -195,6 +334,7 @@ def _normalize_category_rows(
     rows: List[Mapping[str, Any]],
     source: str,
     category_label: str,
+    rank_level: str,
     own_asin: str,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
     normalized_rows: List[Dict[str, Any]] = []
@@ -226,6 +366,7 @@ def _normalize_category_rows(
             "bsr_rank": rank if source == "pangolin:amzBestSellers" else None,
             "category_list_rank": rank,
             "category_label": category_label,
+            "rank_level": rank_level,
             "category_candidate_source": source,
             "ad_visibility": "category_list",
             "source": source,
@@ -234,20 +375,22 @@ def _normalize_category_rows(
         if asin == own_asin:
             own_found = True
             if source == "pangolin:amzBestSellers":
-                own_rank.update(
-                    {
-                        "own_bsr_rank": rank,
-                        "own_bsr_category": category_label,
-                        "own_bsr_source": source,
-                    }
+                _set_own_category_rank(
+                    own_rank,
+                    metric="bsr",
+                    rank_level=rank_level,
+                    rank=rank,
+                    category_label=category_label,
+                    source=source,
                 )
             elif source == "pangolin:amzNewReleases":
-                own_rank.update(
-                    {
-                        "own_new_release_rank": rank,
-                        "own_new_release_category": category_label,
-                        "own_new_release_source": source,
-                    }
+                _set_own_category_rank(
+                    own_rank,
+                    metric="new_release",
+                    rank_level=rank_level,
+                    rank=rank,
+                    category_label=category_label,
+                    source=source,
                 )
             else:
                 own_rank.update(
@@ -262,6 +405,7 @@ def _normalize_category_rows(
     attempt = {
         "source": source,
         "category": category_label,
+        "rank_level": rank_level,
         "bsr_capture_status": "measured" if own_found else "not_in_bsr_window",
         "bsr_result_count": len(normalized_rows),
         "bsr_window_size": len(rows),
@@ -471,47 +615,60 @@ def build_public_context(
     competitor_rows: List[Dict[str, Any]] = []
     category_candidates: List[Dict[str, Any]] = []
     bsr_capture_attempts: List[Dict[str, Any]] = []
-    own_category_rank: Dict[str, Any] = {}
+    own_category_rank: Dict[str, Any] = _own_bsr_ranks_from_listing(listing)
     for keyword in keywords:
         rows = pangolin.keyword_search(keyword=keyword, site=site, zipcode=zipcode)
         rank, competitors = _rank_rows_for_keyword(keyword, rows, own_asin)
         rank_rows.append(rank)
         competitor_rows.extend(competitors)
 
-    category_label = _category_keyword(listing, keywords, category_keyword)
-    category_sources: List[Tuple[str, Any]] = []
+    category_labels = _category_rank_labels(listing, keywords, category_keyword)
+    category_label = category_labels[-1]["label"] if category_labels else _category_keyword(listing, keywords, category_keyword)
+    category_sources: List[Tuple[str, str, str, Any]] = []
     if category_rankings_enabled:
         if include_product_of_category and listing.get("category_id"):
+            product_category = category_labels[-1] if category_labels else {"label": str(category_label or listing.get("category_id") or "category"), "rank_level": "configured"}
             category_sources.append(
                 (
                     "pangolin:amzProductOfCategory",
+                    str(product_category["label"]),
+                    str(product_category["rank_level"]),
                     lambda: pangolin.product_of_category(category_id=str(listing["category_id"]), site=site, zipcode=zipcode),
                 )
             )
-        if category_label and include_best_sellers:
-            category_sources.append(
-                (
-                    "pangolin:amzBestSellers",
-                    lambda: pangolin.best_sellers(category_keyword=str(category_label), site=site, zipcode=zipcode),
+        if include_best_sellers:
+            for category in category_labels:
+                label = str(category["label"])
+                category_sources.append(
+                    (
+                        "pangolin:amzBestSellers",
+                        label,
+                        str(category["rank_level"]),
+                        lambda label=label: pangolin.best_sellers(category_keyword=label, site=site, zipcode=zipcode),
+                    )
                 )
-            )
-        if category_label and include_new_releases:
-            category_sources.append(
-                (
-                    "pangolin:amzNewReleases",
-                    lambda: pangolin.new_releases(category_keyword=str(category_label), site=site, zipcode=zipcode),
+        if include_new_releases:
+            for category in category_labels:
+                label = str(category["label"])
+                category_sources.append(
+                    (
+                        "pangolin:amzNewReleases",
+                        label,
+                        str(category["rank_level"]),
+                        lambda label=label: pangolin.new_releases(category_keyword=label, site=site, zipcode=zipcode),
+                    )
                 )
-            )
-    for source, fetch_rows in category_sources:
+    for source, source_category_label, rank_level, fetch_rows in category_sources:
         try:
             rows = fetch_rows()
         except Exception as exc:
-            bsr_capture_attempts.append(_bsr_capture_failed(source=source, category_label=category_label, error=exc))
+            bsr_capture_attempts.append(_bsr_capture_failed(source=source, category_label=source_category_label, error=exc))
             continue
         normalized, own_rank, attempts = _normalize_category_rows(
             rows=rows,
             source=source,
-            category_label=str(category_label or listing.get("category_name") or listing.get("category_id") or "category"),
+            category_label=source_category_label,
+            rank_level=rank_level,
             own_asin=own_asin,
         )
         category_candidates.extend(normalized)
@@ -550,14 +707,23 @@ def build_public_context(
     bsr_result_count = sum(int(row.get("bsr_result_count") or 0) for row in successful_bsr)
     bsr_window_source = ", ".join(sorted({str(row.get("source")) for row in bsr_capture_attempts if row.get("source")}))
     listing_bsr_rank = parse_int(listing.get("best_sellers_rank"))
-    if own_category_rank.get("own_bsr_rank") is None and listing_bsr_rank is not None:
-        own_category_rank.update(
-            {
-                "own_bsr_rank": listing_bsr_rank,
-                "own_bsr_category": listing.get("category_name"),
-                "own_bsr_source": "pangolin:amzProductDetail",
-            }
+    if own_category_rank.get("own_bsr_leaf_rank") is None and listing_bsr_rank is not None:
+        _set_own_category_rank(
+            own_category_rank,
+            metric="bsr",
+            rank_level="leaf",
+            rank=listing_bsr_rank,
+            category_label=str(listing.get("category_name") or category_label or "category"),
+            source="pangolin:amzProductDetail",
         )
+    if own_category_rank.get("own_bsr_rank") is None:
+        own_category_rank["own_bsr_rank"] = own_category_rank.get("own_bsr_leaf_rank") or own_category_rank.get("own_bsr_major_rank")
+        own_category_rank["own_bsr_category"] = own_category_rank.get("own_bsr_leaf_category") or own_category_rank.get("own_bsr_major_category")
+        own_category_rank["own_bsr_source"] = own_category_rank.get("own_bsr_leaf_source") or own_category_rank.get("own_bsr_major_source")
+    if own_category_rank.get("own_new_release_rank") is None:
+        own_category_rank["own_new_release_rank"] = own_category_rank.get("own_new_release_leaf_rank") or own_category_rank.get("own_new_release_major_rank")
+        own_category_rank["own_new_release_category"] = own_category_rank.get("own_new_release_leaf_category") or own_category_rank.get("own_new_release_major_category")
+        own_category_rank["own_new_release_source"] = own_category_rank.get("own_new_release_leaf_source") or own_category_rank.get("own_new_release_major_source")
     return {
         "public_listing": listing,
         "core_keywords": selected_keywords,

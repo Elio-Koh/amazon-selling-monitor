@@ -558,10 +558,6 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
     market = context.get("market", {})
     rank = context.get("rank", {})
     core_keywords = context.get("core_keywords", [])
-    keyword_market = context.get("keyword_market", [])
-    placement_profile = context.get("placement_profile", [])
-    keyword_placement = context.get("keyword_placement", [])
-    action_history = context.get("action_history", [])
     sales = data.get("sales", {})
     all_ads = summary["advertising"]["all_ads"]
     sp = summary["advertising"]["sp"]
@@ -608,8 +604,6 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
     cols = st.columns(2)
     with cols[0]:
         st.subheader("Listing & Offer")
-        if listing.get("main_image_url"):
-            st.image(listing["main_image_url"], width=180)
         render_key_values(
             {
                 "Title": safe_text(listing.get("title")),
@@ -641,20 +635,7 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
         )
 
     st.subheader("Own Ranking")
-    render_key_values(
-        {
-            "Best Seller Rank": safe_text(rank.get("own_bsr_rank")),
-            "Best Seller Category": safe_text(rank.get("own_bsr_category")),
-            "Best Seller Source": safe_text(rank.get("own_bsr_source")),
-            "New Release Rank": safe_text(rank.get("own_new_release_rank")),
-            "New Release Category": safe_text(rank.get("own_new_release_category")),
-            "New Release Source": safe_text(rank.get("own_new_release_source")),
-            "Category List Rank": safe_text(rank.get("own_category_list_rank")),
-            "Category List Category": safe_text(rank.get("own_category_list_category")),
-            "Category List Source": safe_text(rank.get("own_category_list_source")),
-            "BSR Capture Status": safe_text(rank.get("bsr_capture_status")),
-        }
-    )
+    render_key_values(own_ranking_values(rank))
 
     st.subheader("Core Keywords")
     if core_keywords:
@@ -681,27 +662,24 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
         note = context.get("public_context_status", {}).get("message")
         st.caption(note or "No selected competitor context is available. Connect Pangolin public context or configure core keywords.")
 
-    st.subheader("Keyword & Placement")
-    if keyword_placement:
-        st.dataframe(keyword_placement, use_container_width=True, hide_index=True)
-    elif keyword_market:
-        st.dataframe(keyword_market, use_container_width=True, hide_index=True)
-    elif placement_profile:
-        st.dataframe(placement_profile, use_container_width=True, hide_index=True)
-    else:
-        placement_warning = _first_matching_warning(data["source_status"].get("warnings") or [], ("placement", "keyword"))
-        st.caption(placement_warning or "No Lingxing keyword or placement context is available in the current pull.")
-
-    st.subheader("Action History")
-    if action_history:
-        st.dataframe(action_history, use_container_width=True)
-    else:
-        st.caption("No prior action history is available in the current pull.")
-
 
 def render_key_values(values: Mapping[str, Any]) -> None:
     rows = [{"Metric": key, "Value": safe_text(value)} for key, value in values.items()]
     st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+def own_ranking_values(rank: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "BSR Major Category Rank": safe_text(rank.get("own_bsr_major_rank")),
+        "BSR Major Category": safe_text(rank.get("own_bsr_major_category")),
+        "BSR Leaf Category Rank": safe_text(rank.get("own_bsr_leaf_rank")),
+        "BSR Leaf Category": safe_text(rank.get("own_bsr_leaf_category")),
+        "New Release Major Category Rank": safe_text(rank.get("own_new_release_major_rank")),
+        "New Release Major Category": safe_text(rank.get("own_new_release_major_category")),
+        "New Release Leaf Category Rank": safe_text(rank.get("own_new_release_leaf_rank")),
+        "New Release Leaf Category": safe_text(rank.get("own_new_release_leaf_category")),
+        "BSR Capture Status": safe_text(rank.get("bsr_capture_status")),
+    }
 
 
 def _core_keyword_table(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:

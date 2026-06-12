@@ -2,6 +2,10 @@ from src.public_context import build_public_context, normalize_public_listing
 
 
 class FakePangolinClient:
+    def __init__(self):
+        self.best_seller_queries = []
+        self.new_release_queries = []
+
     def product_detail(self, *, asin, site, zipcode):
         products = {
             "B0GXYYZPBW": {
@@ -15,7 +19,10 @@ class FakePangolinClient:
                 "rating": "36 ratings",
                 "category_id": "123",
                 "category_name": "Milk Frothers",
-                "bestSellersRank": "#12 in Milk Frothers",
+                "bestSellersRankItems": [
+                    {"rank": "#8", "category": "Kitchen & Dining"},
+                    {"rank": "#2", "category": "Milk Frothers"},
+                ],
                 "image": "https://example.test/frother.jpg",
                 "features": ["Rechargeable", "Variable speed", "Detachable whisk"],
                 "deliveryTime": {"deliveryTime": "Mon, Jun 15", "fastestDelivery": "Sat, Jun 13"},
@@ -44,14 +51,34 @@ class FakePangolinClient:
         ]
 
     def best_sellers(self, *, category_keyword, site, zipcode):
+        self.best_seller_queries.append(category_keyword)
+        if category_keyword == "Kitchen & Dining":
+            return [
+                {"asin": "B333333333", "title": "Kitchen Best Seller", "price": "$19.99", "star": "4.4", "rating": "3,100 ratings"},
+                {"asin": "B555555555", "title": "Kitchen Competitor", "price": "$22.99", "star": "4.5", "rating": "1,900 ratings"},
+                {"asin": "B666666666", "title": "Kitchen Competitor 2", "price": "$25.99", "star": "4.3", "rating": "980 ratings"},
+                {"asin": "B777777777", "title": "Kitchen Competitor 3", "price": "$28.99", "star": "4.2", "rating": "510 ratings"},
+                {"asin": "B888888888", "title": "Kitchen Competitor 4", "price": "$29.99", "star": "4.1", "rating": "430 ratings"},
+                {"asin": "B999999999", "title": "Kitchen Competitor 5", "price": "$31.99", "star": "4.0", "rating": "320 ratings"},
+                {"asin": "BAAAAAAAAA", "title": "Kitchen Competitor 6", "price": "$32.99", "star": "3.9", "rating": "210 ratings"},
+                {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
+            ]
         return [
             {"asin": "B333333333", "title": "Best Seller Milk Frother", "price": "$19.99", "star": "4.4", "rating": "3,100 ratings"},
             {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
         ]
 
     def new_releases(self, *, category_keyword, site, zipcode):
+        self.new_release_queries.append(category_keyword)
+        if category_keyword == "Kitchen & Dining":
+            return [
+                {"asin": "B444444444", "title": "Kitchen New Release", "price": "$34.99", "star": "4.7", "rating": "120 ratings"},
+                {"asin": "BBBBBBBBBB", "title": "Kitchen New Release 2", "price": "$36.99", "star": "4.6", "rating": "98 ratings"},
+                {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
+            ]
         return [
             {"asin": "B444444444", "title": "New Release Frother", "price": "$34.99", "star": "4.7", "rating": "120 ratings"},
+            {"asin": "CCCCCCCCCC", "title": "New Release Frother 2", "price": "$35.99", "star": "4.5", "rating": "88 ratings"},
             {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
         ]
 
@@ -87,6 +114,7 @@ def test_normalize_public_listing_reads_delivery_promise_aliases():
 
 
 def test_build_public_context_selects_keywords_and_competitors():
+    client = FakePangolinClient()
     context = build_public_context(
         asin="B0GXYYZPBW",
         marketplace="US",
@@ -94,7 +122,7 @@ def test_build_public_context_selects_keywords_and_competitors():
         core_keywords=["milk frother", "coffee frother"],
         pinned_competitor_asins=["B111111111"],
         excluded_competitor_asins=[],
-        client=FakePangolinClient(),
+        client=client,
         max_competitors=5,
     )
 
@@ -104,9 +132,20 @@ def test_build_public_context_selects_keywords_and_competitors():
     assert [row["keyword"] for row in context["core_keywords"]] == ["milk frother", "coffee frother"]
     assert context["rank"]["core_keyword_ranks"][0]["own_organic_rank"] == 1
     assert context["rank"]["bsr_capture_status"] == "measured"
-    assert context["rank"]["own_bsr_rank"] == 2
-    assert context["rank"]["own_new_release_rank"] == 2
+    assert client.best_seller_queries == ["Kitchen & Dining", "Milk Frothers"]
+    assert client.new_release_queries == ["Kitchen & Dining", "Milk Frothers"]
+    assert context["rank"]["own_bsr_major_rank"] == 8
+    assert context["rank"]["own_bsr_major_category"] == "Kitchen & Dining"
+    assert context["rank"]["own_bsr_leaf_rank"] == 2
+    assert context["rank"]["own_bsr_leaf_category"] == "Milk Frothers"
+    assert context["rank"]["own_new_release_major_rank"] == 3
+    assert context["rank"]["own_new_release_major_category"] == "Kitchen & Dining"
+    assert context["rank"]["own_new_release_leaf_rank"] == 3
+    assert context["rank"]["own_new_release_leaf_category"] == "Milk Frothers"
+    assert context["rank"]["own_bsr_rank"] == context["rank"]["own_bsr_leaf_rank"]
+    assert context["rank"]["own_new_release_rank"] == context["rank"]["own_new_release_leaf_rank"]
     assert context["rank"]["own_category_list_rank"] == 2
+    assert {row["rank_level"] for row in context["market"]["category_candidates"]} >= {"major", "leaf"}
     assert context["market"]["selected_competitors"][0]["asin"] == "B111111111"
     assert "operator_pinned" in context["market"]["selected_competitors"][0]["why_selected"]
     competitor_asins = {row["asin"] for row in context["market"]["selected_competitors"]}

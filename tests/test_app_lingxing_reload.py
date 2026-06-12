@@ -153,6 +153,38 @@ def test_build_dashboard_summary_reloads_when_window_days_keyword_hits_stale_fun
     assert summary == {"window_days": 7}
 
 
+def test_own_ranking_values_use_major_and_leaf_rows(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+
+    values = app.own_ranking_values(
+        {
+            "own_bsr_major_rank": 8,
+            "own_bsr_major_category": "Kitchen & Dining",
+            "own_bsr_leaf_rank": 2,
+            "own_bsr_leaf_category": "Milk Frothers",
+            "own_new_release_major_rank": 3,
+            "own_new_release_major_category": "Kitchen & Dining",
+            "own_new_release_leaf_rank": 3,
+            "own_new_release_leaf_category": "Milk Frothers",
+            "bsr_capture_status": "measured",
+        }
+    )
+
+    assert values == {
+        "BSR Major Category Rank": "8",
+        "BSR Major Category": "Kitchen & Dining",
+        "BSR Leaf Category Rank": "2",
+        "BSR Leaf Category": "Milk Frothers",
+        "New Release Major Category Rank": "3",
+        "New Release Major Category": "Kitchen & Dining",
+        "New Release Leaf Category Rank": "3",
+        "New Release Leaf Category": "Milk Frothers",
+        "BSR Capture Status": "measured",
+    }
+    assert "Best Seller Rank" not in values
+    assert "New Release Rank" not in values
+
+
 def test_date_inputs_for_yesterday_show_resolved_window(monkeypatch):
     app = import_app_with_fake_streamlit(monkeypatch)
     calls = []
