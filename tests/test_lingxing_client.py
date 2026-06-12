@@ -6,8 +6,8 @@ def test_normalize_dashboard_payload_extracts_sales_and_campaigns():
         "orders": {"total_orders": 80, "total_sale_total": 1000, "currency_code": "USD"},
         "asin_sales": {"total_units": 90},
         "campaigns": [
-            {"campaign_id": "sp-1", "campaign_name": "LH-B0F9FS822W-SP-exact", "spend": 100, "sales": 240, "orders": 8},
-            {"campaign_id": "sd-1", "campaign_name": "LH-B0F9FS822W-SD-retarget", "spend": 20, "sales": 30, "orders": 1},
+            {"campaign_id": "sp-1", "campaign_name": "LH-B0GXYYZPBW-SP-exact", "spend": 100, "sales": 240, "orders": 8},
+            {"campaign_id": "sd-1", "campaign_name": "LH-B0GXYYZPBW-SD-retarget", "spend": 20, "sales": 30, "orders": 1},
         ],
         "listing": {"title": "Sample product", "fba_fulfillable": 120},
         "pulled_at": "2026-06-12T08:00:00Z",
@@ -39,7 +39,7 @@ def test_normalize_dashboard_payload_records_missing_parent_sales():
 
 def test_build_blocked_dashboard_does_not_return_fixture_metrics():
     dashboard = build_blocked_dashboard(
-        asin="B0F9FS822W",
+        asin="B0GXYYZPBW",
         mode="live_blocked",
         reason="HTTP 404 Not Found",
     )

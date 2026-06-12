@@ -17,7 +17,7 @@ from .ad_scope import AdScopeResolver, split_campaigns_by_scope
 from .metrics import summarize_advertising
 
 
-DEFAULT_ASIN = "B0F9FS822W"
+DEFAULT_ASIN = "B0GXYYZPBW"
 DEFAULT_FIXTURE_PATH = Path("data/fixtures/sample_dashboard_payload.json")
 
 
