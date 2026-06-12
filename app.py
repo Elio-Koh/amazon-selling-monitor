@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 from typing import Any, Dict
 
 import streamlit as st
 
+from src import lingxing_client
 from src.config import load_targets
-from src.lingxing_client import DEFAULT_ASIN, LingxingClient, build_blocked_dashboard, load_fixture_dashboard
 from src.metrics import build_dashboard_summary
 
 
@@ -46,21 +47,47 @@ def secrets_get(key: str, default: Any = None) -> Any:
         return os.environ.get(key, default)
 
 
+def create_lingxing_client(server_url: str, asin: str, transport: str) -> Any:
+    try:
+        return lingxing_client.LingxingClient(
+            server_url=server_url,
+            asin=asin,
+            transport=transport,
+        )
+    except TypeError as exc:
+        if "unexpected keyword argument 'transport'" not in str(exc):
+            raise
+        refreshed = importlib.reload(lingxing_client)
+        try:
+            return refreshed.LingxingClient(
+                server_url=server_url,
+                asin=asin,
+                transport=transport,
+            )
+        except TypeError as retry_exc:
+            if "unexpected keyword argument 'transport'" in str(retry_exc):
+                raise RuntimeError(
+                    "Streamlit deployment is still using a stale LingxingClient module "
+                    "without transport support. Reboot the Streamlit app or clear cache and rerun."
+                ) from retry_exc
+            raise
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def load_dashboard_data(force_refresh_key: int) -> Dict[str, Any]:
     del force_refresh_key
     server_url = secrets_get("LINGXING_MCP_URL")
-    asin = secrets_get("ASIN", DEFAULT_ASIN)
+    asin = secrets_get("ASIN", lingxing_client.DEFAULT_ASIN)
     transport = secrets_get("LINGXING_MCP_TRANSPORT", "auto")
     if server_url:
         try:
-            return LingxingClient(
+            return create_lingxing_client(
                 server_url=str(server_url),
                 asin=str(asin),
                 transport=str(transport),
             ).fetch_dashboard()
         except Exception as exc:
-            return build_blocked_dashboard(
+            return lingxing_client.build_blocked_dashboard(
                 asin=str(asin),
                 mode="live_blocked",
                 reason=(
@@ -70,7 +97,7 @@ def load_dashboard_data(force_refresh_key: int) -> Dict[str, Any]:
                     f"Error: {type(exc).__name__}: {exc}"
                 ),
             )
-    dashboard = load_fixture_dashboard()
+    dashboard = lingxing_client.load_fixture_dashboard()
     dashboard["source_status"]["mode"] = "fixture_no_live_url"
     dashboard["source_status"]["warnings"].append("LINGXING_MCP_URL is not configured.")
     return dashboard
@@ -207,7 +234,7 @@ def render_details(data: Dict[str, Any]) -> None:
 def main() -> None:
     targets = load_targets()
     st.title("Amazon Selling Monitor")
-    st.caption(f"ASIN: {targets.get('asin', DEFAULT_ASIN)} | 中文实时经营看板")
+    st.caption(f"ASIN: {targets.get('asin', lingxing_client.DEFAULT_ASIN)} | 中文实时经营看板")
 
     if "refresh_counter" not in st.session_state:
         st.session_state.refresh_counter = 0
