@@ -1,5 +1,5 @@
 {
-  "asin": "B0GXYYZPBW",
+  "asin": "B0F9FS822W",
   "pulled_at": "2026-06-12T08:00:00Z",
   "orders": {
     "total_orders": 80,
@@ -12,7 +12,7 @@
   "campaigns": [
     {
       "campaign_id": "sp-1",
-      "campaign_name": "LH-B0GXYYZPBW-SP-exact",
+      "campaign_name": "LH-B0F9FS822W-SP-exact",
       "targeting_type": "manual",
       "spend": 180.0,
       "sales": 420.0,
@@ -22,7 +22,7 @@
     },
     {
       "campaign_id": "sb-1",
-      "campaign_name": "LH-B0GXYYZPBW-SB-brand",
+      "campaign_name": "LH-B0F9FS822W-SB-brand",
       "spend": 45.0,
       "sales": 70.0,
       "orders": 5,
@@ -31,7 +31,7 @@
     },
     {
       "campaign_id": "sd-1",
-      "campaign_name": "LH-B0GXYYZPBW-SD-retarget",
+      "campaign_name": "LH-B0F9FS822W-SD-retarget",
       "spend": 15.0,
       "sales": 30.0,
       "orders": 3,
@@ -40,7 +40,7 @@
     }
   ],
   "listing": {
-    "title": "B0GXYYZPBW Amazon product",
+    "title": "B0F9FS822W Amazon product",
     "price_display": "$29.99",
     "rating": 4.5,
     "review_count": 120

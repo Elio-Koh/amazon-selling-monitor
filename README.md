@@ -1,6 +1,6 @@
 # Amazon Selling Monitor
 
-中文 Streamlit Dashboard，用于实时查看 ASIN `B0GXYYZPBW` 的销售、SP 广告、全量广告和经营上下文。
+中文 Streamlit Dashboard，用于实时查看 ASIN `B0F9FS822W` 的销售、SP 广告、全量广告和经营上下文。
 
 ## 本地运行
 
@@ -16,8 +16,8 @@ streamlit run app.py
 在 Streamlit Cloud 的 app secrets 中配置：
 
 ```toml
-ASIN = "B0GXYYZPBW"
-LINGXING_MCP_URL = "http://34.143.132.97:8368/lingxing_config_B0GXYYZPBW/"
+ASIN = "B0F9FS822W"
+LINGXING_MCP_URL = "http://34.143.132.97:8368/lingxing_config_B0F9FS822W/"
 ```
 
 `LINGXING_MCP_URL` 必须是 Streamlit Cloud 可以直接访问并完成 MCP 会话的端点。Codex 本地配置里的 MCP config URL 不一定等同于公开可用的 SSE/Streamable HTTP endpoint；如果该地址返回 404 或 MCP 握手失败，页面会显示“实时数据源不可用”，不会继续展示样例业务数字。
