@@ -14,6 +14,11 @@ product:
   sp_orders_target_period: daily
   pangolin_enabled: true
   pangolin_zipcode: "10041"
+  pangolin_category_rankings_enabled: true
+  pangolin_category_keyword: ""
+  pangolin_include_product_of_category: true
+  pangolin_include_best_sellers: true
+  pangolin_include_new_releases: true
   max_competitors: 10
   core_keywords:
     - milk frother

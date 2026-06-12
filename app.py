@@ -202,6 +202,11 @@ def enrich_public_context(data: Dict[str, Any], targets: Mapping[str, Any]) -> D
             pinned_competitor_asins=[str(item) for item in targets.get("pinned_competitor_asins", []) or []],
             excluded_competitor_asins=[str(item) for item in targets.get("excluded_competitor_asins", []) or []],
             max_competitors=int(targets.get("max_competitors") or 10),
+            category_rankings_enabled=bool(targets.get("pangolin_category_rankings_enabled", True)),
+            category_keyword=safe_text(targets.get("pangolin_category_keyword"), ""),
+            include_product_of_category=bool(targets.get("pangolin_include_product_of_category", True)),
+            include_best_sellers=bool(targets.get("pangolin_include_best_sellers", True)),
+            include_new_releases=bool(targets.get("pangolin_include_new_releases", True)),
             client=PangolinClient(api_token=str(token)),
         )
     except (PangolinError, RuntimeError, ValueError) as exc:
@@ -551,6 +556,7 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
     listing = context.get("public_listing") or context.get("listing", {})
     inventory = context.get("inventory", {})
     market = context.get("market", {})
+    rank = context.get("rank", {})
     core_keywords = context.get("core_keywords", [])
     keyword_market = context.get("keyword_market", [])
     placement_profile = context.get("placement_profile", [])
@@ -634,6 +640,22 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
             }
         )
 
+    st.subheader("Own Ranking")
+    render_key_values(
+        {
+            "Best Seller Rank": safe_text(rank.get("own_bsr_rank")),
+            "Best Seller Category": safe_text(rank.get("own_bsr_category")),
+            "Best Seller Source": safe_text(rank.get("own_bsr_source")),
+            "New Release Rank": safe_text(rank.get("own_new_release_rank")),
+            "New Release Category": safe_text(rank.get("own_new_release_category")),
+            "New Release Source": safe_text(rank.get("own_new_release_source")),
+            "Category List Rank": safe_text(rank.get("own_category_list_rank")),
+            "Category List Category": safe_text(rank.get("own_category_list_category")),
+            "Category List Source": safe_text(rank.get("own_category_list_source")),
+            "BSR Capture Status": safe_text(rank.get("bsr_capture_status")),
+        }
+    )
+
     st.subheader("Core Keywords")
     if core_keywords:
         st.dataframe(_core_keyword_table(core_keywords), use_container_width=True, hide_index=True)
@@ -648,6 +670,8 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
             {
                 "Category CVR": safe_text(market.get("category_average_cvr")),
                 "CVR Source": safe_text(market.get("category_average_cvr_source")),
+                "BSR Capture Status": safe_text(rank.get("bsr_capture_status")),
+                "BSR Result Count": safe_text(rank.get("bsr_result_count")),
                 "Competitor Source": safe_text(market.get("selected_competitors_source") or market.get("source")),
                 "Freshness": safe_text(market.get("freshness")),
                 "Confidence": safe_text(market.get("confidence")),
@@ -713,6 +737,9 @@ def _competitor_table(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]
                 "Deal": row.get("deal_present"),
                 "Best Organic Rank": rank.get("best_organic_rank"),
                 "Best Ad Rank": rank.get("best_ad_rank"),
+                "Best BSR Rank": rank.get("best_bsr_rank"),
+                "Best Category/List Rank": rank.get("best_category_list_rank"),
+                "Category Source": rank.get("category_rank_source"),
                 "Matched Keywords": ", ".join(str(item) for item in row.get("keywords", []) or []),
                 "Why Selected": ", ".join(str(item) for item in row.get("why_selected", []) or []),
             }

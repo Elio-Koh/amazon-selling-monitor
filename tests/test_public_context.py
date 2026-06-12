@@ -38,13 +38,22 @@ class FakePangolinClient:
         ]
 
     def product_of_category(self, *, category_id, site, zipcode):
-        return []
+        return [
+            {"asin": "B222222222", "title": "Category Milk Frother", "price": "$24.99", "star": "4.5", "rating": "980 ratings"},
+            {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
+        ]
 
     def best_sellers(self, *, category_keyword, site, zipcode):
-        return []
+        return [
+            {"asin": "B333333333", "title": "Best Seller Milk Frother", "price": "$19.99", "star": "4.4", "rating": "3,100 ratings"},
+            {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
+        ]
 
     def new_releases(self, *, category_keyword, site, zipcode):
-        return []
+        return [
+            {"asin": "B444444444", "title": "New Release Frother", "price": "$34.99", "star": "4.7", "rating": "120 ratings"},
+            {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
+        ]
 
 
 def test_normalize_public_listing_splits_discount_and_deal():
@@ -94,5 +103,18 @@ def test_build_public_context_selects_keywords_and_competitors():
     assert context["public_listing"]["deal_present"] is False
     assert [row["keyword"] for row in context["core_keywords"]] == ["milk frother", "coffee frother"]
     assert context["rank"]["core_keyword_ranks"][0]["own_organic_rank"] == 1
+    assert context["rank"]["bsr_capture_status"] == "measured"
+    assert context["rank"]["own_bsr_rank"] == 2
+    assert context["rank"]["own_new_release_rank"] == 2
+    assert context["rank"]["own_category_list_rank"] == 2
     assert context["market"]["selected_competitors"][0]["asin"] == "B111111111"
     assert "operator_pinned" in context["market"]["selected_competitors"][0]["why_selected"]
+    competitor_asins = {row["asin"] for row in context["market"]["selected_competitors"]}
+    assert "B0GXYYZPBW" not in competitor_asins
+    assert "B333333333" in competitor_asins
+    assert "B444444444" in competitor_asins
+    category_competitor = next(row for row in context["market"]["selected_competitors"] if row["asin"] == "B333333333")
+    assert category_competitor["rank_relationship"]["best_bsr_rank"] == 1
+    new_release_competitor = next(row for row in context["market"]["selected_competitors"] if row["asin"] == "B444444444")
+    assert category_competitor["rank_relationship"]["category_rank_source"] == "pangolin:amzBestSellers"
+    assert new_release_competitor["rank_relationship"]["category_rank_source"] == "pangolin:amzNewReleases"

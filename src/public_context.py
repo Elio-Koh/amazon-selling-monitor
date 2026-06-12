@@ -165,6 +165,121 @@ def _row_price(row: Mapping[str, Any]) -> Optional[float]:
     return parse_float(row.get("price"))
 
 
+def _min_rank(current: Optional[float], candidate: Optional[float]) -> Optional[float]:
+    if candidate is None:
+        return current
+    return min(current if current is not None else candidate, candidate)
+
+
+def _category_keyword(listing: Mapping[str, Any], keywords: List[str], configured: Optional[str] = None) -> Optional[str]:
+    configured_text = first_text(configured)
+    if configured_text:
+        return configured_text
+    category_name = first_text(listing.get("category_name"))
+    if category_name:
+        return category_name
+    bsr = first_text(listing.get("best_sellers_rank"))
+    if bsr:
+        match = re.search(r"in\s+(.+)$", bsr, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return keywords[0] if keywords else None
+
+
+def _row_rank(row: Mapping[str, Any], fallback: int) -> int:
+    return parse_int(row.get("rank") or row.get("bsr_rank") or row.get("position") or row.get("index")) or fallback
+
+
+def _normalize_category_rows(
+    *,
+    rows: List[Mapping[str, Any]],
+    source: str,
+    category_label: str,
+    own_asin: str,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
+    normalized_rows: List[Dict[str, Any]] = []
+    competitor_rows: List[Dict[str, Any]] = []
+    own_rank: Dict[str, Any] = {}
+    own_found = False
+    for idx, row in enumerate(rows, start=1):
+        asin = _asin(row)
+        if not asin:
+            continue
+        rank = _row_rank(row, idx)
+        normalized = {
+            "keyword": f"category:{category_label}",
+            "competitor_asin": asin,
+            "title": first_text(row.get("title")),
+            "price": first_text(row.get("price")),
+            "rating": parse_float(row.get("star") or row.get("rating")),
+            "review_count": parse_int(row.get("rating") or row.get("customerReviews") or row.get("review_count")),
+            "coupon_present": parse_bool(row.get("coupon_present") or row.get("coupon")),
+            "deal_present": parse_bool(row.get("deal_present")) or "deal" in (first_text(row.get("badge")) or "").lower(),
+            "delivery_promise": normalize_delivery(
+                row.get("deliveryTime")
+                or row.get("delivery")
+                or row.get("deliveryPromise")
+                or row.get("delivery_promise")
+                or row.get("availability")
+                or row.get("inStock")
+            ),
+            "bsr_rank": rank if source == "pangolin:amzBestSellers" else None,
+            "category_list_rank": rank,
+            "category_label": category_label,
+            "category_candidate_source": source,
+            "ad_visibility": "category_list",
+            "source": source,
+        }
+        normalized_rows.append(normalized)
+        if asin == own_asin:
+            own_found = True
+            if source == "pangolin:amzBestSellers":
+                own_rank.update(
+                    {
+                        "own_bsr_rank": rank,
+                        "own_bsr_category": category_label,
+                        "own_bsr_source": source,
+                    }
+                )
+            elif source == "pangolin:amzNewReleases":
+                own_rank.update(
+                    {
+                        "own_new_release_rank": rank,
+                        "own_new_release_category": category_label,
+                        "own_new_release_source": source,
+                    }
+                )
+            else:
+                own_rank.update(
+                    {
+                        "own_category_list_rank": rank,
+                        "own_category_list_category": category_label,
+                        "own_category_list_source": source,
+                    }
+                )
+        else:
+            competitor_rows.append(normalized)
+    attempt = {
+        "source": source,
+        "category": category_label,
+        "bsr_capture_status": "measured" if own_found else "not_in_bsr_window",
+        "bsr_result_count": len(normalized_rows),
+        "bsr_window_size": len(rows),
+    }
+    return normalized_rows, own_rank, [attempt]
+
+
+def _bsr_capture_failed(*, source: str, category_label: Optional[str], error: Exception) -> Dict[str, Any]:
+    return {
+        "source": source,
+        "category": category_label,
+        "bsr_capture_status": "bsr_capture_failed",
+        "bsr_result_count": 0,
+        "bsr_window_size": 0,
+        "error": f"{type(error).__name__}: {error}",
+    }
+
+
 def _rank_rows_for_keyword(keyword: str, rows: List[Mapping[str, Any]], own_asin: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     own_organic = None
     own_ad = None
@@ -238,6 +353,10 @@ def _score_competitors(
                 "keywords": set(),
                 "best_organic_rank": None,
                 "best_ad_rank": None,
+                "best_bsr_rank": None,
+                "best_category_list_rank": None,
+                "category_rank_source": None,
+                "category_candidate_sources": set(),
                 "price": _row_price(row),
                 "coupon_present": False,
                 "deal_present": False,
@@ -261,15 +380,25 @@ def _score_competitors(
             current["deal_present"] = True
         organic_rank = parse_float(row.get("organic_rank"))
         ad_rank = parse_float(row.get("ad_rank"))
+        bsr_rank = parse_float(row.get("bsr_rank"))
+        category_list_rank = parse_float(row.get("category_list_rank"))
         if organic_rank is not None:
             current["best_organic_rank"] = min(current["best_organic_rank"] or organic_rank, organic_rank)
         if ad_rank is not None:
             current["best_ad_rank"] = min(current["best_ad_rank"] or ad_rank, ad_rank)
+        previous_category_rank = current["best_category_list_rank"]
+        current["best_bsr_rank"] = _min_rank(current["best_bsr_rank"], bsr_rank)
+        current["best_category_list_rank"] = _min_rank(current["best_category_list_rank"], category_list_rank)
+        category_source = first_text(row.get("category_candidate_source") or row.get("source"))
+        if category_source and category_list_rank is not None:
+            current["category_candidate_sources"].add(category_source)
+            if previous_category_rank is None or category_list_rank <= previous_category_rank:
+                current["category_rank_source"] = category_source
 
     selected: List[Dict[str, Any]] = []
     for asin, row in aggregated.items():
         score = len(row["keywords"]) * 10.0
-        why = ["keyword_serp_overlap"]
+        why = ["keyword_serp_overlap"] if row["keywords"] else []
         if asin in pinned:
             score += 1000.0
             why.append("operator_pinned")
@@ -282,6 +411,12 @@ def _score_competitors(
         if row["coupon_present"] or row["deal_present"]:
             score += 6.0
             why.append("commercial_pressure")
+        if row["best_bsr_rank"] is not None or row["best_category_list_rank"] is not None:
+            score += 8.0
+            why.append("category_or_bestseller_presence")
+        if "pangolin:amzNewReleases" in row["category_candidate_sources"]:
+            score += 5.0
+            why.append("new_release_presence")
         out = {
             "asin": asin,
             "score": round(score, 4),
@@ -290,6 +425,9 @@ def _score_competitors(
             "rank_relationship": {
                 "best_organic_rank": row["best_organic_rank"],
                 "best_ad_rank": row["best_ad_rank"],
+                "best_bsr_rank": row["best_bsr_rank"],
+                "best_category_list_rank": row["best_category_list_rank"],
+                "category_rank_source": row["category_rank_source"],
             },
             "keywords": sorted(keyword for keyword in row["keywords"] if keyword),
             "price": row["price"],
@@ -317,6 +455,11 @@ def build_public_context(
     excluded_competitor_asins: Iterable[str],
     client: Any = None,
     max_competitors: int = 10,
+    category_rankings_enabled: bool = True,
+    category_keyword: Optional[str] = None,
+    include_product_of_category: bool = True,
+    include_best_sellers: bool = True,
+    include_new_releases: bool = True,
 ) -> Dict[str, Any]:
     site = SITE_BY_MARKETPLACE.get(marketplace, f"amz_{marketplace.lower()}")
     own_asin = asin.upper()
@@ -326,11 +469,55 @@ def build_public_context(
     keywords = [keyword.strip() for keyword in core_keywords if str(keyword).strip()]
     rank_rows: List[Dict[str, Any]] = []
     competitor_rows: List[Dict[str, Any]] = []
+    category_candidates: List[Dict[str, Any]] = []
+    bsr_capture_attempts: List[Dict[str, Any]] = []
+    own_category_rank: Dict[str, Any] = {}
     for keyword in keywords:
         rows = pangolin.keyword_search(keyword=keyword, site=site, zipcode=zipcode)
         rank, competitors = _rank_rows_for_keyword(keyword, rows, own_asin)
         rank_rows.append(rank)
         competitor_rows.extend(competitors)
+
+    category_label = _category_keyword(listing, keywords, category_keyword)
+    category_sources: List[Tuple[str, Any]] = []
+    if category_rankings_enabled:
+        if include_product_of_category and listing.get("category_id"):
+            category_sources.append(
+                (
+                    "pangolin:amzProductOfCategory",
+                    lambda: pangolin.product_of_category(category_id=str(listing["category_id"]), site=site, zipcode=zipcode),
+                )
+            )
+        if category_label and include_best_sellers:
+            category_sources.append(
+                (
+                    "pangolin:amzBestSellers",
+                    lambda: pangolin.best_sellers(category_keyword=str(category_label), site=site, zipcode=zipcode),
+                )
+            )
+        if category_label and include_new_releases:
+            category_sources.append(
+                (
+                    "pangolin:amzNewReleases",
+                    lambda: pangolin.new_releases(category_keyword=str(category_label), site=site, zipcode=zipcode),
+                )
+            )
+    for source, fetch_rows in category_sources:
+        try:
+            rows = fetch_rows()
+        except Exception as exc:
+            bsr_capture_attempts.append(_bsr_capture_failed(source=source, category_label=category_label, error=exc))
+            continue
+        normalized, own_rank, attempts = _normalize_category_rows(
+            rows=rows,
+            source=source,
+            category_label=str(category_label or listing.get("category_name") or listing.get("category_id") or "category"),
+            own_asin=own_asin,
+        )
+        category_candidates.extend(normalized)
+        competitor_rows.extend([row for row in normalized if row.get("competitor_asin") != own_asin])
+        bsr_capture_attempts.extend(attempts)
+        own_category_rank.update({key: value for key, value in own_rank.items() if value is not None})
 
     selected_keywords = [
         {
@@ -349,14 +536,38 @@ def build_public_context(
     selected_competitors = _score_competitors(
         competitor_rows,
         pinned={str(item).upper() for item in pinned_competitor_asins},
-        excluded={str(item).upper() for item in excluded_competitor_asins},
+        excluded={own_asin, *{str(item).upper() for item in excluded_competitor_asins}},
         top_n=max_competitors,
     )
+    successful_bsr = [row for row in bsr_capture_attempts if row.get("bsr_capture_status") != "bsr_capture_failed"]
+    failed_bsr = [row for row in bsr_capture_attempts if row.get("bsr_capture_status") == "bsr_capture_failed"]
+    if successful_bsr:
+        bsr_capture_status = "measured" if any(row.get("bsr_capture_status") == "measured" for row in successful_bsr) else "not_in_bsr_window"
+    elif failed_bsr:
+        bsr_capture_status = "bsr_capture_failed"
+    else:
+        bsr_capture_status = "not_configured"
+    bsr_result_count = sum(int(row.get("bsr_result_count") or 0) for row in successful_bsr)
+    bsr_window_source = ", ".join(sorted({str(row.get("source")) for row in bsr_capture_attempts if row.get("source")}))
+    listing_bsr_rank = parse_int(listing.get("best_sellers_rank"))
+    if own_category_rank.get("own_bsr_rank") is None and listing_bsr_rank is not None:
+        own_category_rank.update(
+            {
+                "own_bsr_rank": listing_bsr_rank,
+                "own_bsr_category": listing.get("category_name"),
+                "own_bsr_source": "pangolin:amzProductDetail",
+            }
+        )
     return {
         "public_listing": listing,
         "core_keywords": selected_keywords,
         "rank": {
             "core_keyword_ranks": rank_rows,
+            "bsr_capture_attempts": bsr_capture_attempts,
+            "bsr_capture_status": bsr_capture_status,
+            "bsr_result_count": bsr_result_count,
+            "bsr_window_source": bsr_window_source or None,
+            **own_category_rank,
             "source": "pangolin:amzKeyword",
             "freshness": now_iso(),
             "confidence": "measured" if any(row["rank_status"] == "measured" for row in rank_rows) else "estimated",
@@ -365,9 +576,10 @@ def build_public_context(
         "market": {
             "category_average_cvr": None,
             "category_average_cvr_source": None,
+            "category_candidates": category_candidates,
             "selected_competitors": selected_competitors,
             "selected_competitors_source": "src.public_context",
-            "source": "pangolin:amzKeyword",
+            "source": "src.public_context",
             "freshness": now_iso(),
             "confidence": "measured" if selected_competitors else "missing",
             "missing_fields": [] if selected_competitors else ["selected_competitors"],
