@@ -1,0 +1,11 @@
+product:
+  asin: B0GXYYZPBW
+  marketplace: US
+  currency: USD
+  sp_target_acos: 0.4993
+  sp_daily_budget_initial: 300
+  sp_daily_budget_later: 600
+  sp_daily_budget_current: 300
+  sp_orders_daily_min: 22
+  sp_orders_daily_max: 60
+  sp_orders_target_period: daily

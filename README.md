@@ -1,0 +1,33 @@
+# Amazon Selling Monitor
+
+中文 Streamlit Dashboard，用于实时查看 ASIN `B0GXYYZPBW` 的销售、SP 广告、全量广告和经营上下文。
+
+## 本地运行
+
+```bash
+python3 -m pip install -r requirements.txt
+streamlit run app.py
+```
+
+如果没有配置 Lingxing MCP URL，页面会使用 `data/fixtures/sample_dashboard_payload.json` 的样例数据，并在顶部显示数据源状态。
+
+## Streamlit Cloud Secrets
+
+在 Streamlit Cloud 的 app secrets 中配置：
+
+```toml
+ASIN = "B0GXYYZPBW"
+LINGXING_MCP_URL = "http://34.143.132.97:8368/lingxing_config_B0GXYYZPBW/"
+```
+
+## 当前目标
+
+- SP ACOS 目标：49.93%
+- SP 日预算：前期 300 美元，后续 600 美元
+- SP 广告订单目标：22-60 pc/day
+
+## 数据口径
+
+- `SP 广告`：只纳入明确或可推断为 Sponsored Products 的 campaign，用于 SP 目标追踪。
+- `全量广告`：纳入 SP、SB、SD、SBV 和 unknown，用于整体广告经营监控。
+- Auto / Manual 是 SP 内部投放类型，不作为排除 SP 的依据。

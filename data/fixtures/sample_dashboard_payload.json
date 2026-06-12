@@ -1,0 +1,56 @@
+{
+  "asin": "B0GXYYZPBW",
+  "pulled_at": "2026-06-12T08:00:00Z",
+  "orders": {
+    "total_orders": 80,
+    "total_sale_total": 1000.0,
+    "currency_code": "USD"
+  },
+  "asin_sales": {
+    "total_units": 90
+  },
+  "campaigns": [
+    {
+      "campaign_id": "sp-1",
+      "campaign_name": "LH-B0GXYYZPBW-SP-exact",
+      "targeting_type": "manual",
+      "spend": 180.0,
+      "sales": 420.0,
+      "orders": 30,
+      "clicks": 420,
+      "impressions": 21000
+    },
+    {
+      "campaign_id": "sb-1",
+      "campaign_name": "LH-B0GXYYZPBW-SB-brand",
+      "spend": 45.0,
+      "sales": 70.0,
+      "orders": 5,
+      "clicks": 120,
+      "impressions": 9000
+    },
+    {
+      "campaign_id": "sd-1",
+      "campaign_name": "LH-B0GXYYZPBW-SD-retarget",
+      "spend": 15.0,
+      "sales": 30.0,
+      "orders": 3,
+      "clicks": 60,
+      "impressions": 5000
+    }
+  ],
+  "listing": {
+    "title": "B0GXYYZPBW Amazon product",
+    "price_display": "$29.99",
+    "rating": 4.5,
+    "review_count": 120
+  },
+  "inventory": {
+    "fba_fulfillable": 120,
+    "days_of_supply": 18,
+    "stockout_risk": "medium"
+  },
+  "warnings": [
+    "Fixture data is for local UI verification only."
+  ]
+}
