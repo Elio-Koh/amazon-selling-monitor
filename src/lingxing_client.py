@@ -124,6 +124,64 @@ def load_fixture_dashboard(path: Path = DEFAULT_FIXTURE_PATH) -> Dict[str, Any]:
     return normalize_dashboard_payload(payload)
 
 
+def build_blocked_dashboard(*, asin: str, mode: str, reason: str) -> Dict[str, Any]:
+    timestamp = now_iso()
+    return {
+        "asin": asin,
+        "pulled_at": timestamp,
+        "sales": {
+            "total_sales": 0,
+            "total_orders": 0,
+            "total_units": 0,
+            "currency": "USD",
+        },
+        "campaigns": [],
+        "sp_campaigns": [],
+        "ad_scope_resolutions": [],
+        "advertising": {
+            "sp": _empty_ad_summary(),
+            "all_ads": _empty_ad_summary(),
+            "by_product": {},
+        },
+        "context": {
+            "listing": {},
+            "inventory": {},
+            "market": {},
+            "keyword_market": [],
+            "action_history": [],
+        },
+        "source_status": {
+            "mode": mode,
+            "freshness": timestamp,
+            "blocked": True,
+            "missing_fields": [
+                "sales.total_sales",
+                "sales.total_orders",
+                "advertising.campaigns",
+            ],
+            "warnings": [reason],
+        },
+    }
+
+
+def _empty_ad_summary() -> Dict[str, Optional[float]]:
+    return {
+        "spend": 0,
+        "sales": 0,
+        "orders": 0,
+        "clicks": 0,
+        "impressions": 0,
+        "acos": None,
+        "roas": None,
+        "cpc": None,
+        "ctr": None,
+        "cvr": None,
+        "cpa": None,
+        "tacos": None,
+        "order_share": None,
+    }
+
+
 class LingxingClient:
     """Best-effort live Lingxing MCP client wrapper.
 

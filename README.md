@@ -20,6 +20,8 @@ ASIN = "B0GXYYZPBW"
 LINGXING_MCP_URL = "http://34.143.132.97:8368/lingxing_config_B0GXYYZPBW/"
 ```
 
+`LINGXING_MCP_URL` 必须是 Streamlit Cloud 可以直接访问并完成 MCP 会话的端点。Codex 本地配置里的 MCP config URL 不一定等同于公开可用的 SSE/Streamable HTTP endpoint；如果该地址返回 404 或 MCP 握手失败，页面会显示“实时数据源不可用”，不会继续展示样例业务数字。
+
 ## 当前目标
 
 - SP ACOS 目标：49.93%

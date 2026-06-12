@@ -1,4 +1,4 @@
-from src.lingxing_client import normalize_dashboard_payload
+from src.lingxing_client import build_blocked_dashboard, normalize_dashboard_payload
 
 
 def test_normalize_dashboard_payload_extracts_sales_and_campaigns():
@@ -35,3 +35,18 @@ def test_normalize_dashboard_payload_records_missing_parent_sales():
 
     assert "sales.total_sales" in normalized["source_status"]["missing_fields"]
     assert "sales.total_orders" in normalized["source_status"]["missing_fields"]
+
+
+def test_build_blocked_dashboard_does_not_return_fixture_metrics():
+    dashboard = build_blocked_dashboard(
+        asin="B0GXYYZPBW",
+        mode="live_blocked",
+        reason="HTTP 404 Not Found",
+    )
+
+    assert dashboard["source_status"]["mode"] == "live_blocked"
+    assert dashboard["source_status"]["blocked"] is True
+    assert dashboard["sales"]["total_sales"] == 0
+    assert dashboard["sales"]["total_orders"] == 0
+    assert dashboard["campaigns"] == []
+    assert "HTTP 404 Not Found" in dashboard["source_status"]["warnings"][0]

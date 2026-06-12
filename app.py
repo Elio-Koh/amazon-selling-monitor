@@ -8,7 +8,7 @@ from typing import Any, Dict
 import streamlit as st
 
 from src.config import load_targets
-from src.lingxing_client import DEFAULT_ASIN, LingxingClient, load_fixture_dashboard
+from src.lingxing_client import DEFAULT_ASIN, LingxingClient, build_blocked_dashboard, load_fixture_dashboard
 from src.metrics import build_dashboard_summary
 
 
@@ -55,10 +55,15 @@ def load_dashboard_data(force_refresh_key: int) -> Dict[str, Any]:
         try:
             return LingxingClient(server_url=str(server_url), asin=str(asin)).fetch_dashboard()
         except Exception as exc:
-            dashboard = load_fixture_dashboard()
-            dashboard["source_status"]["mode"] = "fixture_after_live_error"
-            dashboard["source_status"]["warnings"].append(f"Lingxing live pull failed: {exc}")
-            return dashboard
+            return build_blocked_dashboard(
+                asin=str(asin),
+                mode="live_blocked",
+                reason=(
+                    "Lingxing live pull failed. The configured LINGXING_MCP_URL is reachable "
+                    "from settings but did not complete an MCP session. "
+                    f"Configured URL: {server_url}. Error: {type(exc).__name__}: {exc}"
+                ),
+            )
     dashboard = load_fixture_dashboard()
     dashboard["source_status"]["mode"] = "fixture_no_live_url"
     dashboard["source_status"]["warnings"].append("LINGXING_MCP_URL is not configured.")
@@ -70,6 +75,8 @@ def render_source_status(data: Dict[str, Any]) -> None:
     mode = status["mode"]
     if mode == "live_mcp":
         st.success(f"数据源：Lingxing 实时拉取。更新时间：{data['pulled_at']}")
+    elif status.get("blocked"):
+        st.error(f"实时数据源不可用。模式：{mode}。检查时间：{data['pulled_at']}")
     elif mode.startswith("fixture"):
         st.warning(f"当前使用样例数据。模式：{mode}。更新时间：{data['pulled_at']}")
     else:
@@ -83,6 +90,9 @@ def render_source_status(data: Dict[str, Any]) -> None:
         with st.expander("数据源提示", expanded=False):
             for warning in warnings:
                 st.write(f"- {warning}")
+            if status.get("blocked"):
+                st.write("- 这个页面当前不会展示样例业务数据，避免把 fixture 误认为真实数据。")
+                st.write("- 请确认 Streamlit secrets 中的 `LINGXING_MCP_URL` 是可由 Streamlit 直接访问的 MCP/SSE 或 Streamable HTTP 端点，而不是仅供 Codex 注册使用的 config URL。")
 
 
 def render_metric_row(summary: Dict[str, Any], currency: str) -> None:
