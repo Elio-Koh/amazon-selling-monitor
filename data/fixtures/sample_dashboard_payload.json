@@ -1,5 +1,7 @@
 {
   "asin": "B0GXYYZPBW",
+  "parent_asin": "B0FPBGR1XZ",
+  "selected_child_asin": "B0GXYYZPBW",
   "pulled_at": "2026-06-12T08:00:00Z",
   "orders": {
     "total_orders": 80,
@@ -49,6 +51,30 @@
     "fba_fulfillable": 120,
     "days_of_supply": 18,
     "stockout_risk": "medium"
+  },
+  "child_asins": [
+    {
+      "asin": "B0GXYYZPBW",
+      "parent_asin": "B0FPBGR1XZ",
+      "title": "B0GXYYZPBW Amazon product",
+      "image_url": "",
+      "seller_sku": "MF04-V2",
+      "units": 90,
+      "sales": 1000.0,
+      "orders": 80,
+      "ad_spend": 240.0,
+      "inventory": 120,
+      "status": "fixture"
+    }
+  ],
+  "sales_family": {
+    "parent_asin": "B0FPBGR1XZ",
+    "selected_child_asin": "B0GXYYZPBW",
+    "child_count": 1,
+    "active_child_count": 1,
+    "sales": 1000.0,
+    "orders": 80,
+    "units": 90
   },
   "warnings": [
     "Fixture data is for local UI verification only."

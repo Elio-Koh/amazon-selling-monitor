@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import html
 import importlib
 import inspect
 import json
@@ -12,6 +14,7 @@ from typing import Any, Dict, Iterable, Mapping
 
 import streamlit as st
 
+from src import lingxing_api_client
 from src import lingxing_client
 from src import metrics
 from src.config import load_targets
@@ -76,6 +79,32 @@ def app_version() -> str:
         if value:
             return str(value)[:8]
     return "local"
+
+
+def lingxing_api_secret_values(targets: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "ASIN": secrets_get("ASIN", targets.get("asin", lingxing_client.DEFAULT_ASIN)),
+        "LINGXING_PARENT_ASIN": secrets_get(
+            "LINGXING_PARENT_ASIN",
+            targets.get("lingxing_parent_asin") or targets.get("parent_asin"),
+        ),
+        "LINGXING_API_BASE_URL": secrets_get("LINGXING_API_BASE_URL"),
+        "LINGXING_ACCOUNT": secrets_get("LINGXING_ACCOUNT"),
+        "LINGXING_PROFILE_ID": secrets_get("LINGXING_PROFILE_ID"),
+        "LINGXING_USER_TOKEN": secrets_get("LINGXING_USER_TOKEN"),
+        "LINGXING_API_TIMEOUT_SECONDS": secrets_get("LINGXING_API_TIMEOUT_SECONDS", 8),
+    }
+
+
+def has_lingxing_api_config(values: Mapping[str, Any]) -> bool:
+    keys = (
+        "LINGXING_API_BASE_URL",
+        "LINGXING_ACCOUNT",
+        "LINGXING_PROFILE_ID",
+        "LINGXING_USER_TOKEN",
+        "LINGXING_PARENT_ASIN",
+    )
+    return any(values.get(key) not in (None, "") for key in keys)
 
 
 def create_lingxing_client(server_url: str, asin: str, transport: str) -> Any:
@@ -307,9 +336,28 @@ def load_dashboard_data(
     known_non_sp_campaign_ids: tuple[str, ...] = (),
 ) -> Dict[str, Any]:
     del force_refresh_key
+    targets = load_targets()
+    api_values = lingxing_api_secret_values(targets)
     server_url = secrets_get("LINGXING_MCP_URL")
-    asin = secrets_get("ASIN", lingxing_client.DEFAULT_ASIN)
+    asin = secrets_get("ASIN", targets.get("asin", lingxing_client.DEFAULT_ASIN))
     transport = secrets_get("LINGXING_MCP_TRANSPORT", "auto")
+    api_failure = ""
+
+    if has_lingxing_api_config(api_values):
+        try:
+            config = lingxing_api_client.LingxingAPIConfig.from_mapping(api_values)
+            client = lingxing_api_client.LingxingAPIClient(config)
+            return client.fetch_dashboard(
+                start_date=start_date,
+                end_date=end_date,
+                sp_campaign_ids=sp_campaign_ids,
+                known_non_sp_campaign_ids=known_non_sp_campaign_ids,
+            )
+        except lingxing_api_client.LingxingAPIConfigError as exc:
+            api_failure = f"Lingxing REST API config incomplete: {exc}"
+        except Exception as exc:
+            api_failure = f"Lingxing REST API pull failed: {type(exc).__name__}: {exc}"
+
     if server_url:
         try:
             dashboard = fetch_dashboard_with_reload(
@@ -321,60 +369,144 @@ def load_dashboard_data(
                 sp_campaign_ids=sp_campaign_ids,
                 known_non_sp_campaign_ids=known_non_sp_campaign_ids,
             )
-            return enrich_public_context(dashboard, load_targets())
+            if api_failure:
+                dashboard.setdefault("source_status", {}).setdefault("warnings", []).append(
+                    api_failure + " Falling back to MCP."
+                )
+            return dashboard
         except Exception as exc:
+            fallback_reason = (
+                f"{api_failure} " if api_failure else ""
+            ) + (
+                "Lingxing live pull failed. The configured LINGXING_MCP_URL did not complete "
+                "an MCP session. "
+                f"Configured URL: {server_url}. Configured transport: {transport}. "
+                f"Error: {type(exc).__name__}: {exc}"
+            )
             blocked = lingxing_client.build_blocked_dashboard(
                 asin=str(asin),
                 mode="live_blocked",
-                reason=(
-                    "Lingxing live pull failed. The configured LINGXING_MCP_URL did not complete "
-                    "an MCP session. "
-                    f"Configured URL: {server_url}. Configured transport: {transport}. "
-                    f"Error: {type(exc).__name__}: {exc}"
-                ),
+                reason=fallback_reason,
             )
             blocked["date_window"] = {"start_date": start_date, "end_date": end_date}
-            return enrich_public_context(blocked, load_targets())
+            return blocked
+    if api_failure:
+        blocked = lingxing_client.build_blocked_dashboard(
+            asin=str(asin),
+            mode="api_blocked",
+            reason=api_failure,
+        )
+        blocked["date_window"] = {"start_date": start_date, "end_date": end_date}
+        return blocked
+
     dashboard = lingxing_client.load_fixture_dashboard(
         sp_campaign_ids=sp_campaign_ids,
         known_non_sp_campaign_ids=known_non_sp_campaign_ids,
     )
     dashboard["date_window"] = {"start_date": start_date, "end_date": end_date}
     dashboard["source_status"]["mode"] = "fixture_no_live_url"
-    dashboard["source_status"]["warnings"].append("LINGXING_MCP_URL is not configured.")
-    return enrich_public_context(dashboard, load_targets())
+    dashboard["source_status"]["warnings"].append("Lingxing REST API secrets and LINGXING_MCP_URL are not configured.")
+    return dashboard
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_market_context(
+    force_refresh_key: int,
+    data: Dict[str, Any],
+    targets: Mapping[str, Any],
+) -> Dict[str, Any]:
+    del force_refresh_key
+    return enrich_public_context(copy.deepcopy(data), targets)
 
 
 def inject_css() -> None:
     st.markdown(
         """
         <style>
-        .block-container { padding-top: 2.2rem; max-width: 1180px; }
+        .block-container { padding-top: 1.35rem; max-width: 1320px; }
+        h1 { letter-spacing: 0; font-size: 2.25rem !important; margin-bottom: 0.25rem !important; }
+        h2, h3 { letter-spacing: 0; }
         div[data-testid="stMetric"] {
             border: 1px solid #e5e7eb;
             border-radius: 8px;
-            padding: 14px 16px;
+            padding: 12px 14px;
             background: #ffffff;
-            min-height: 112px;
+            min-height: 104px;
         }
         div[data-testid="stMetricLabel"] p { color: #4b5563; font-size: 0.88rem; }
         div[data-testid="stMetricValue"] { color: #111827; }
         .status-strip {
-            border: 1px solid #dbeafe;
+            border: 1px solid #d1d5db;
             border-radius: 8px;
-            padding: 12px 14px;
-            background: #f8fbff;
+            padding: 10px 12px;
+            background: #fbfcfd;
             color: #1f2937;
+            margin: 0.8rem 0 1rem 0;
+            font-size: 0.92rem;
+        }
+        .health-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+            margin: 0.75rem 0 1rem 0;
+        }
+        .health-item {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 10px 12px;
+            background: #ffffff;
+        }
+        .health-label {
+            color: #6b7280;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0;
+            margin-bottom: 2px;
+        }
+        .health-value {
+            color: #111827;
+            font-size: 0.94rem;
+            font-weight: 650;
+            line-height: 1.3;
         }
         .section-note { color: #6b7280; font-size: 0.9rem; }
+        .kv-list {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            background: #ffffff;
+            overflow: hidden;
+        }
+        .kv-row {
+            display: grid;
+            grid-template-columns: minmax(120px, 42%) minmax(0, 58%);
+            gap: 12px;
+            padding: 8px 10px;
+            border-bottom: 1px solid #f3f4f6;
+            align-items: start;
+        }
+        .kv-row:last-child { border-bottom: 0; }
+        .kv-key { color: #6b7280; font-size: 0.84rem; line-height: 1.35; }
+        .kv-value {
+            color: #111827;
+            font-size: 0.9rem;
+            font-weight: 560;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+        }
         .badge {
             display: inline-block;
             border-radius: 999px;
             padding: 2px 8px;
-            background: #eef2ff;
-            color: #3730a3;
+            background: #ecfdf5;
+            color: #047857;
             font-size: 0.78rem;
             margin-left: 6px;
+        }
+        @media (max-width: 900px) {
+            .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 560px) {
+            .health-grid { grid-template-columns: 1fr; }
         }
         </style>
         """,
@@ -421,12 +553,63 @@ def _as_date(value: Any) -> date:
     return today_for_timezone()
 
 
+def dashboard_with_stale_fallback(data: Dict[str, Any]) -> Dict[str, Any]:
+    status = data.get("source_status", {})
+    if status.get("blocked") and st.session_state.get("last_successful_dashboard"):
+        stale = copy.deepcopy(st.session_state.last_successful_dashboard)
+        stale_status = stale.setdefault("source_status", {})
+        stale_status["stale"] = True
+        stale_status["current_refresh_blocked"] = True
+        stale_status.setdefault("warnings", []).insert(
+            0,
+            "Current refresh failed; showing the last successful dashboard snapshot.",
+        )
+        stale_status.setdefault("warnings", []).extend(status.get("warnings") or [])
+        return stale
+    if not status.get("blocked") and not str(status.get("mode", "")).startswith("fixture"):
+        st.session_state.last_successful_dashboard = copy.deepcopy(data)
+    return data
+
+
 def render_source_status(data: Dict[str, Any], window: DateWindow) -> None:
     status = data["source_status"]
     mode = status["mode"]
     partial_badge = '<span class="badge">partial day</span>' if window.is_partial else ""
-    if mode == "live_mcp":
-        body = f"Source: Lingxing live MCP. Window: {window.start_date} to {window.end_date}. Pulled at: {data['pulled_at']} {partial_badge}"
+    parent_asin = data.get("parent_asin") or "Not configured"
+    selected_child = data.get("selected_child_asin") or data.get("asin")
+    if mode == "live_api":
+        source = "Lingxing REST API"
+    elif mode == "live_mcp":
+        source = "Lingxing MCP fallback"
+    elif status.get("blocked"):
+        source = "Blocked"
+    elif mode.startswith("fixture"):
+        source = "Sample fixture"
+    else:
+        source = mode
+    if status.get("stale"):
+        health = "Stale fallback"
+    elif status.get("blocked"):
+        health = "Blocked"
+    elif mode.startswith("fixture"):
+        health = "Sample data"
+    elif mode == "live_mcp":
+        health = "MCP fallback"
+    else:
+        health = "Healthy"
+    st.markdown(
+        f"""
+        <div class="health-grid">
+            <div class="health-item"><div class="health-label">Source Health</div><div class="health-value">{health}</div></div>
+            <div class="health-item"><div class="health-label">Date Window</div><div class="health-value">{window.start_date} to {window.end_date}</div></div>
+            <div class="health-item"><div class="health-label">Parent ASIN</div><div class="health-value">{parent_asin}</div></div>
+            <div class="health-item"><div class="health-label">Selected Child</div><div class="health-value">{selected_child}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if mode in {"live_api", "live_mcp"} and not status.get("stale"):
+        body = f"Source: {source}. Pulled at: {data['pulled_at']} {partial_badge}"
         st.markdown(f'<div class="status-strip">{body}</div>', unsafe_allow_html=True)
     elif status.get("blocked"):
         st.error(f"Live data unavailable. Mode: {mode}. Checked at: {data['pulled_at']}")
@@ -472,28 +655,84 @@ def render_overview(data: Dict[str, Any], summary: Dict[str, Any], currency: str
     all_ads = summary["advertising"]["all_ads"]
     inventory = data["context"]["inventory"]
     listing = data["context"].get("public_listing") or data["context"]["listing"]
+    family = data.get("sales_family") if isinstance(data.get("sales_family"), Mapping) else {}
 
     cols = st.columns(3)
     with cols[0]:
-        st.subheader("SP Goal Pace")
-        st.progress(min(float(sp_goal["orders_progress_max"] or 0), 1.0), text=f"Order target pace for {window.label}")
-        st.write(f"Order status: `{sp_goal['orders_status']}`")
-        st.write(f"Budget usage: {percent(sp_goal['budget_used_pct'])}")
-        st.write(f"ACOS gap: {percent(sp_goal['acos_delta'])}")
+        st.subheader("Parent Listing")
+        render_key_values(
+            {
+                "Parent ASIN": safe_text(data.get("parent_asin")),
+                "Selected Child": safe_text(data.get("selected_child_asin") or data.get("asin")),
+                "Child Count": number(family.get("child_count") or len(data.get("variations") or [])),
+                "Active Children": number(family.get("active_child_count")),
+                "Window Units": number(data["sales"].get("total_units")),
+            }
+        )
 
     with cols[1]:
-        st.subheader("All Advertising")
-        st.write(f"Spend: {money(all_ads['spend'], currency)}")
-        st.write(f"Sales: {money(all_ads['sales'], currency)}")
-        st.write(f"ACOS: {percent(all_ads['acos'])}")
-        st.write(f"ROAS: {number(all_ads['roas'])}")
+        st.subheader("SP Goal Pace")
+        st.progress(min(float(sp_goal["orders_progress_max"] or 0), 1.0), text=f"Order target pace for {window.label}")
+        render_key_values(
+            {
+                "Order Status": sp_goal["orders_status"],
+                "Budget Usage": percent(sp_goal["budget_used_pct"]),
+                "ACOS Gap": percent(sp_goal["acos_delta"]),
+                "All-Ads TACOS": percent(all_ads["tacos"]),
+            }
+        )
 
     with cols[2]:
         st.subheader("Inventory & Listing")
-        st.write(f"FBA fulfillable: {number(inventory.get('fba_fulfillable'))}")
-        st.write(f"Days of supply: {number(inventory.get('days_of_supply'))}")
-        st.write(f"Stockout risk: `{safe_text(inventory.get('stockout_risk'))}`")
-        st.write(f"Price: {safe_text(listing.get('price_display') or listing.get('price'))}")
+        render_key_values(
+            {
+                "FBA Fulfillable": number(inventory.get("fba_fulfillable")),
+                "Days of Supply": number(inventory.get("days_of_supply")),
+                "Stockout Risk": safe_text(inventory.get("stockout_risk")),
+                "Price": safe_text(listing.get("price_display") or listing.get("price")),
+                "Rating": safe_text(listing.get("rating")),
+            }
+        )
+
+
+def render_variations(data: Dict[str, Any], currency: str) -> None:
+    rows = []
+    for row in data.get("variations") or []:
+        rows.append(
+            {
+                "Image": row.get("image_url"),
+                "Child ASIN": row.get("asin"),
+                "Title": row.get("title"),
+                "SKU": row.get("seller_sku"),
+                "Units": row.get("units"),
+                "Sales": row.get("sales"),
+                "Orders": row.get("orders"),
+                "Ad Spend": row.get("ad_spend"),
+                "Inventory": row.get("inventory"),
+                "Status": row.get("status"),
+            }
+        )
+    if not rows:
+        st.info("No child ASIN details were returned for this window.")
+        return
+
+    family = data.get("sales_family") if isinstance(data.get("sales_family"), Mapping) else {}
+    cols = st.columns(4)
+    cols[0].metric("Parent ASIN", safe_text(data.get("parent_asin")))
+    cols[1].metric("Children", number(family.get("child_count") or len(rows)))
+    cols[2].metric("Active Children", number(family.get("active_child_count")))
+    cols[3].metric("Family Sales", money(family.get("sales") or data["sales"].get("total_sales"), currency))
+
+    column_config = {}
+    try:
+        column_config = {
+            "Image": st.column_config.ImageColumn("Image", width="small"),
+            "Sales": st.column_config.NumberColumn("Sales", format="$%.2f"),
+            "Ad Spend": st.column_config.NumberColumn("Ad Spend", format="$%.2f"),
+        }
+    except Exception:
+        column_config = {}
+    st.dataframe(rows, use_container_width=True, hide_index=True, column_config=column_config)
 
 
 def render_sp_ads(data: Dict[str, Any], summary: Dict[str, Any], currency: str) -> None:
@@ -528,6 +767,44 @@ def render_all_ads(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
     st.dataframe(rows, use_container_width=True, hide_index=True)
     st.subheader("Campaign Detail")
     st.dataframe(_campaign_table(data["campaigns"]), use_container_width=True, hide_index=True)
+
+
+def render_market_context_tab(
+    data: Dict[str, Any],
+    summary: Dict[str, Any],
+    currency: str,
+    targets: Mapping[str, Any],
+) -> None:
+    if "market_context_counter" not in st.session_state:
+        st.session_state.market_context_counter = 0
+    cols = st.columns([1, 3])
+    if cols[0].button("Refresh Market Context", use_container_width=True):
+        st.session_state.market_context_counter += 1
+        load_market_context.clear()
+        st.session_state.market_context_loaded = True
+    should_load = bool(st.session_state.get("market_context_loaded"))
+    if should_load:
+        with st.spinner("Pulling market context..."):
+            context_data = load_market_context(
+                st.session_state.market_context_counter,
+                data,
+                dict(targets),
+            )
+        render_context(context_data, summary, currency)
+        return
+
+    cols[1].info("Market context is skipped on initial load. Refresh it here when you need Pangolin listing, rank, or competitor context.")
+    preview = copy.deepcopy(data)
+    preview.setdefault("context", {}).setdefault(
+        "public_context_status",
+        {
+            "status": "skipped",
+            "message": "Market context has not been refreshed in this session.",
+            "source": "pangolin",
+            "freshness": None,
+        },
+    )
+    render_context(preview, summary, currency)
 
 
 def _campaign_table(campaigns: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -664,8 +941,15 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
 
 
 def render_key_values(values: Mapping[str, Any]) -> None:
-    rows = [{"Metric": key, "Value": safe_text(value)} for key, value in values.items()]
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    rows = []
+    for key, value in values.items():
+        rows.append(
+            '<div class="kv-row">'
+            f'<div class="kv-key">{html.escape(str(key))}</div>'
+            f'<div class="kv-value">{html.escape(safe_text(value))}</div>'
+            "</div>"
+        )
+    st.markdown('<div class="kv-list">' + "".join(rows) + "</div>", unsafe_allow_html=True)
 
 
 def own_ranking_values(rank: Mapping[str, Any]) -> Dict[str, Any]:
@@ -764,7 +1048,7 @@ def main() -> None:
         st.session_state.refresh_counter = 0
 
     window = render_header(targets)
-    with st.spinner("Pulling latest data..."):
+    with st.spinner("Refreshing sales, ads, listing, and variation data..."):
         data = load_dashboard_data(
             st.session_state.refresh_counter,
             window.start_date,
@@ -772,6 +1056,7 @@ def main() -> None:
             tuple(str(item) for item in targets.get("sp_campaign_ids", []) or []),
             tuple(str(item) for item in targets.get("known_non_sp_campaign_ids", []) or []),
         )
+    data = dashboard_with_stale_fallback(data)
 
     render_source_status(data, window)
     currency = "$" if data["sales"].get("currency", "USD") == "USD" else ""
@@ -784,16 +1069,18 @@ def main() -> None:
         window_days=window.days,
     )
 
-    tabs = st.tabs(["Operating Overview", "SP Ads", "Advertising Diagnostics", "Business Context", "Raw Data"])
+    tabs = st.tabs(["Overview", "Variations", "SP Performance", "All Ads", "Market Context", "Diagnostics"])
     with tabs[0]:
         render_overview(data, summary, currency, window)
     with tabs[1]:
-        render_sp_ads(data, summary, currency)
+        render_variations(data, currency)
     with tabs[2]:
-        render_all_ads(data, summary, currency)
+        render_sp_ads(data, summary, currency)
     with tabs[3]:
-        render_context(data, summary, currency)
+        render_all_ads(data, summary, currency)
     with tabs[4]:
+        render_market_context_tab(data, summary, currency, targets)
+    with tabs[5]:
         render_details(data)
 
 

@@ -11,7 +11,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .ad_scope import AdScopeResolver, split_campaigns_by_scope
 from .metrics import summarize_advertising
@@ -64,6 +64,10 @@ def normalize_dashboard_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     listing_payload = payload.get("listing") if isinstance(payload.get("listing"), Mapping) else {}
     listing = _normalize_listing(listing_payload)
     inventory = payload.get("inventory") if isinstance(payload.get("inventory"), Mapping) else {}
+    variations = _normalize_variations(payload.get("child_asins") or payload.get("variations"))
+    sales_family = payload.get("sales_family") if isinstance(payload.get("sales_family"), Mapping) else {}
+    parent_asin = payload.get("parent_asin") or sales_family.get("parent_asin")
+    selected_child_asin = payload.get("selected_child_asin") or sales_family.get("selected_child_asin") or payload.get("asin") or DEFAULT_ASIN
 
     total_sales = as_float(
         first_present(orders, ("total_sale_total", "daily_sale_total", "total_sales", "sales"))
@@ -98,6 +102,8 @@ def normalize_dashboard_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
 
     return {
         "asin": payload.get("asin") or DEFAULT_ASIN,
+        "parent_asin": parent_asin,
+        "selected_child_asin": selected_child_asin,
         "pulled_at": payload.get("pulled_at") or now_iso(),
         "date_window": payload.get("date_window") if isinstance(payload.get("date_window"), Mapping) else {},
         "sales": {
@@ -110,6 +116,8 @@ def normalize_dashboard_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
         "sp_campaigns": split.sp_campaigns,
         "ad_scope_resolutions": [item.__dict__ for item in split.resolutions],
         "advertising": ad_summary,
+        "variations": variations,
+        "sales_family": dict(sales_family),
         "context": {
             "listing": dict(listing),
             "inventory": dict(inventory),
@@ -126,6 +134,28 @@ def normalize_dashboard_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
             "warnings": payload.get("warnings") if isinstance(payload.get("warnings"), list) else [],
         },
     }
+
+
+def _normalize_variations(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: List[Dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        row = dict(item)
+        row.setdefault("asin", first_present(item, ("child_asin", "childAsin")))
+        row.setdefault("parent_asin", first_present(item, ("parentAsin",)))
+        row.setdefault("title", first_present(item, ("product_name", "productName", "item_name")))
+        row.setdefault("image_url", first_present(item, ("small_image_url", "main_image", "pic_url")))
+        row.setdefault("seller_sku", first_present(item, ("sku", "local_sku", "local_sku_name")))
+        row["sales"] = as_float(first_present(row, ("sales", "amount", "total_sale_total", "total_sales"))) or 0
+        row["orders"] = as_int(first_present(row, ("orders", "order_items", "total_orders"))) or 0
+        row["units"] = as_int(first_present(row, ("units", "volume", "quantity", "total_units"))) or 0
+        row["ad_spend"] = as_float(first_present(row, ("ad_spend", "spend", "spends", "ads_spend"))) or 0
+        row["inventory"] = as_int(first_present(row, ("inventory", "fba_fulfillable", "afn_fulfillable_quantity"))) or 0
+        rows.append(row)
+    return rows
 
 
 def _normalize_campaign_row(row: Mapping[str, Any]) -> Dict[str, Any]:
