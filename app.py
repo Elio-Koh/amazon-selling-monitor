@@ -10,6 +10,7 @@ import inspect
 import json
 import os
 import re
+import time
 from datetime import date
 from typing import Any, Dict, Iterable, Mapping, Optional
 
@@ -82,6 +83,10 @@ def target_int(targets: Mapping[str, Any], key: str, default: int) -> int:
         return int(targets.get(key) or default)
     except (TypeError, ValueError):
         return default
+
+
+def market_context_now() -> float:
+    return time.monotonic()
 
 
 def app_version() -> str:
@@ -273,7 +278,8 @@ def enrich_public_context_with_token(
             new_releases_url=safe_text(targets.get("pangolin_new_releases_url"), ""),
             direct_url_fallback_enabled=bool(targets.get("amazon_direct_rank_fallback_enabled", True)),
             direct_url_timeout=target_int(targets, "amazon_direct_rank_timeout_seconds", 8),
-            client=PangolinClient(api_token=str(token)),
+            direct_url_max_pages=target_int(targets, "amazon_direct_rank_max_pages", 2),
+            client=PangolinClient(api_token=str(token), timeout=target_int(targets, "pangolin_request_timeout_seconds", 8)),
         )
     except (PangolinError, RuntimeError, ValueError, TimeoutError, OSError) as exc:
         _set_public_context_status(context, "failed", f"{type(exc).__name__}: {exc}", core_keywords)
@@ -524,11 +530,14 @@ def market_context_render_data(data: Dict[str, Any], targets: Mapping[str, Any],
     counter = int(st.session_state.get("market_context_counter", 0))
     key = market_context_request_key(data, targets, counter)
     result_record = st.session_state.get("market_context_result")
-    if isinstance(result_record, Mapping) and result_record.get("key") == key:
+    result_preview = isinstance(result_record, Mapping) and bool(result_record.get("preview"))
+    if isinstance(result_record, Mapping) and result_record.get("key") == key and not result_preview:
         return result_record["data"]
 
     future_record = st.session_state.get("market_context_future")
     future = future_record.get("future") if isinstance(future_record, Mapping) and future_record.get("key") == key else None
+    if future is None and isinstance(result_record, Mapping) and result_record.get("key") == key and result_preview:
+        return result_record["data"]
     if future is None:
         token = secrets_get("PANGOLINFO_API_TOKEN") or secrets_get("PANGOLIN_API_TOKEN")
         if not token:
@@ -536,7 +545,8 @@ def market_context_render_data(data: Dict[str, Any], targets: Mapping[str, Any],
             st.session_state["market_context_result"] = {"key": key, "data": result}
             return result
         future = _submit_market_context_job(data, targets, str(token))
-        st.session_state["market_context_future"] = {"key": key, "future": future}
+        future_record = {"key": key, "future": future, "started_at": market_context_now()}
+        st.session_state["market_context_future"] = future_record
 
     if future.done():
         try:
@@ -550,10 +560,27 @@ def market_context_render_data(data: Dict[str, Any], targets: Mapping[str, Any],
         st.session_state.pop("market_context_future", None)
         return result
 
+    timeout_seconds = target_int(targets, "market_context_background_timeout_seconds", 25)
+    started_value = future_record.get("started_at") if isinstance(future_record, Mapping) else None
+    started_at = float(started_value) if started_value is not None else market_context_now()
+    elapsed = max(market_context_now() - started_at, 0.0)
+    if elapsed >= timeout_seconds:
+        result = _market_context_preview(
+            data,
+            "partial",
+            f"Market context timed out after {timeout_seconds}s; showing available data. Click Refresh Market Context to retry.",
+            targets,
+        )
+        result.setdefault("source_status", {}).setdefault("warnings", []).append(
+            f"Market context background fetch exceeded {timeout_seconds}s."
+        )
+        st.session_state["market_context_result"] = {"key": key, "data": result, "preview": True}
+        return result
+
     return _market_context_preview(
         data,
         "loading",
-        "Market context is loading in background. Core sales and ads data are already available.",
+        f"Market context is loading in background ({int(elapsed)}s). Core sales and ads data are already available.",
         targets,
     )
 

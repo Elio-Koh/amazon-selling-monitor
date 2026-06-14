@@ -439,6 +439,88 @@ def test_market_context_uses_completed_background_result(monkeypatch):
     assert app.st.session_state["market_context_result"]["data"] is enriched
 
 
+def test_market_context_pending_future_times_out_without_resubmitting(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    app.st.session_state = SessionState()
+    data = {
+        "asin": "B0GXYYZPBW",
+        "pulled_at": "2026-06-14T00:00:00Z",
+        "date_window": {"start_date": "2026-06-13", "end_date": "2026-06-13"},
+        "context": {"listing": {"title": "Sample milk frother"}},
+        "source_status": {"warnings": []},
+    }
+    targets = {
+        "asin": "B0GXYYZPBW",
+        "marketplace": "US",
+        "core_keywords": ["milk frother"],
+        "market_context_background_timeout_seconds": 25,
+    }
+    submitted = []
+
+    class PendingFuture:
+        def done(self):
+            return False
+
+    future = PendingFuture()
+    key = app.market_context_request_key(data, targets, 0)
+    app.st.session_state["market_context_future"] = {"key": key, "future": future, "started_at": 0.0}
+    monkeypatch.setattr(app, "market_context_now", lambda: 31.0, raising=False)
+    monkeypatch.setattr(app, "_submit_market_context_job", lambda *args: submitted.append(args) or future)
+
+    result = app.market_context_render_data(data, targets, force_refresh=False)
+
+    status = result["context"]["public_context_status"]
+    assert status["status"] == "partial"
+    assert "timed out" in status["message"].lower()
+    assert app.st.session_state["market_context_future"]["future"] is future
+    assert submitted == []
+
+
+def test_market_context_completed_future_replaces_timeout_preview(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    app.st.session_state = SessionState()
+    data = {
+        "asin": "B0GXYYZPBW",
+        "pulled_at": "2026-06-14T00:00:00Z",
+        "date_window": {"start_date": "2026-06-13", "end_date": "2026-06-13"},
+        "context": {"listing": {"title": "Sample milk frother"}},
+        "source_status": {"warnings": []},
+    }
+    targets = {"asin": "B0GXYYZPBW", "marketplace": "US", "core_keywords": ["milk frother"]}
+    enriched = {
+        **data,
+        "context": {
+            "public_context_status": {
+                "status": "ok",
+                "message": "Pangolin public context loaded.",
+                "source": "pangolin",
+                "freshness": "2026-06-14T00:01:00Z",
+            }
+        },
+    }
+
+    class DoneFuture:
+        def done(self):
+            return True
+
+        def result(self):
+            return enriched
+
+    key = app.market_context_request_key(data, targets, 0)
+    app.st.session_state["market_context_future"] = {"key": key, "future": DoneFuture(), "started_at": 0.0}
+    app.st.session_state["market_context_result"] = {
+        "key": key,
+        "data": app._market_context_preview(data, "partial", "Market context timed out.", targets),
+        "preview": True,
+    }
+
+    result = app.market_context_render_data(data, targets, force_refresh=False)
+
+    assert result is enriched
+    assert app.st.session_state["market_context_result"]["data"] is enriched
+    assert "preview" not in app.st.session_state["market_context_result"]
+
+
 def test_offer_value_formatting_uses_yes_no_and_none(monkeypatch):
     app = import_app_with_fake_streamlit(monkeypatch)
 

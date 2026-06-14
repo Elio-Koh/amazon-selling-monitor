@@ -770,12 +770,18 @@ def build_public_context(
     new_releases_url: Optional[str] = None,
     direct_url_fallback_enabled: bool = True,
     direct_url_timeout: int = 8,
+    direct_url_max_pages: int = 2,
     direct_url_fetcher: Optional[Callable[..., List[Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
     site = SITE_BY_MARKETPLACE.get(marketplace, f"amz_{marketplace.lower()}")
     own_asin = asin.upper()
     pangolin = client or PangolinClient()
-    listing_raw = pangolin.product_detail(asin=own_asin, site=site, zipcode=zipcode)
+    context_failures: List[str] = []
+    try:
+        listing_raw = pangolin.product_detail(asin=own_asin, site=site, zipcode=zipcode)
+    except Exception as exc:
+        listing_raw = {"asin": own_asin}
+        context_failures.append(f"product_detail failed: {_short_error(exc)}")
     listing = normalize_public_listing({**listing_raw, "asin": listing_raw.get("asin") or own_asin}, source="pangolin:amzProductDetail", zipcode=zipcode)
     keyword_limit = max(int(max_keywords or 0), 0)
     keywords = [keyword.strip() for keyword in core_keywords if str(keyword).strip()][:keyword_limit]
@@ -783,7 +789,6 @@ def build_public_context(
     competitor_rows: List[Dict[str, Any]] = []
     category_candidates: List[Dict[str, Any]] = []
     bsr_capture_attempts: List[Dict[str, Any]] = []
-    context_failures: List[str] = []
     own_category_rank: Dict[str, Any] = _own_bsr_ranks_from_listing(listing)
     for keyword in keywords:
         try:
@@ -912,15 +917,24 @@ def build_public_context(
         source = "amazon:directBestSellersUrl"
         category_url = first_text(best_sellers_url)
         category_node_id = first_text(leaf_category_node_id)
-        fetcher = direct_url_fetcher or fetch_amazon_rank_rows_from_url
         try:
-            rows = fetcher(
-                category_url,
-                asin=own_asin,
-                category_label=leaf_label,
-                source=source,
-                timeout=direct_url_timeout,
-            )
+            if direct_url_fetcher is None:
+                rows = fetch_amazon_rank_rows_from_url(
+                    category_url,
+                    asin=own_asin,
+                    category_label=leaf_label,
+                    source=source,
+                    timeout=direct_url_timeout,
+                    max_pages=direct_url_max_pages,
+                )
+            else:
+                rows = direct_url_fetcher(
+                    category_url,
+                    asin=own_asin,
+                    category_label=leaf_label,
+                    source=source,
+                    timeout=direct_url_timeout,
+                )
         except Exception as exc:
             bsr_capture_attempts.append(
                 _bsr_capture_failed(
@@ -952,15 +966,24 @@ def build_public_context(
         source = "amazon:directNewReleasesUrl"
         category_url = first_text(new_releases_url)
         category_node_id = first_text(leaf_category_node_id)
-        fetcher = direct_url_fetcher or fetch_amazon_rank_rows_from_url
         try:
-            rows = fetcher(
-                category_url,
-                asin=own_asin,
-                category_label=leaf_label,
-                source=source,
-                timeout=direct_url_timeout,
-            )
+            if direct_url_fetcher is None:
+                rows = fetch_amazon_rank_rows_from_url(
+                    category_url,
+                    asin=own_asin,
+                    category_label=leaf_label,
+                    source=source,
+                    timeout=direct_url_timeout,
+                    max_pages=direct_url_max_pages,
+                )
+            else:
+                rows = direct_url_fetcher(
+                    category_url,
+                    asin=own_asin,
+                    category_label=leaf_label,
+                    source=source,
+                    timeout=direct_url_timeout,
+                )
         except Exception as exc:
             bsr_capture_attempts.append(
                 _bsr_capture_failed(

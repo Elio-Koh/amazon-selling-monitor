@@ -1,4 +1,5 @@
-from src.public_context import build_public_context, normalize_public_listing
+from src import public_context
+from src.public_context import build_public_context, fetch_amazon_rank_rows_from_url, normalize_public_listing
 
 
 class FakePangolinClient:
@@ -153,6 +154,21 @@ class DirectUrlFallbackPangolinClient(FakePangolinClient):
         ]
 
 
+class ProductDetailFailurePangolinClient(FakePangolinClient):
+    def product_detail(self, *, asin, site, zipcode):
+        raise TimeoutError("Pangolin product detail timed out")
+
+    def product_of_category(self, *, category_id, site, zipcode):
+        self.product_category_queries.append(category_id)
+        return []
+
+    def best_sellers(self, *, category_keyword, site, zipcode, category_node_id=None, category_url=None):
+        self.best_seller_queries.append(
+            {"keyword": category_keyword, "node_id": category_node_id, "url": category_url}
+        )
+        return []
+
+
 def test_normalize_public_listing_splits_discount_and_deal():
     listing = normalize_public_listing(
         {
@@ -168,6 +184,51 @@ def test_normalize_public_listing_splits_discount_and_deal():
 
     assert listing["discount_present"] is True
     assert listing["deal_present"] is False
+
+
+def test_fetch_amazon_rank_rows_from_url_counts_second_page_rank(monkeypatch):
+    first_page_asins = "".join(f'<div data-asin="B{idx:09d}"></div>' for idx in range(1, 51))
+    second_page_asins = (
+        '<div data-asin="B000000051"></div>'
+        '<div data-asin="B000000052"></div>'
+        '<div data-asin="B0GXYYZPBW"></div>'
+    )
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self.body.encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        url = request.full_url
+        calls.append(url)
+        if "pg=2" in url:
+            return FakeResponse(second_page_asins)
+        return FakeResponse(first_page_asins)
+
+    monkeypatch.setattr(public_context.urllib.request, "urlopen", fake_urlopen)
+
+    rows = fetch_amazon_rank_rows_from_url(
+        "https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
+        asin="B0GXYYZPBW",
+        category_label="Milk Frothers",
+        source="amazon:directBestSellersUrl",
+        timeout=1,
+        max_pages=2,
+    )
+
+    assert len(calls) == 2
+    assert rows[-1]["asin"] == "B0GXYYZPBW"
+    assert rows[-1]["rank"] == 53
 
 
 def test_normalize_public_listing_reads_delivery_promise_aliases():
@@ -356,3 +417,38 @@ def test_build_public_context_uses_direct_url_fallback_when_pangolin_leaf_list_m
         row["source"] == "amazon:directBestSellersUrl" and row["bsr_capture_status"] == "measured"
         for row in context["rank"]["bsr_capture_attempts"]
     )
+
+
+def test_build_public_context_uses_direct_url_when_product_detail_fails():
+    client = ProductDetailFailurePangolinClient()
+
+    def fake_fetcher(url, *, asin, category_label, source, timeout):
+        assert asin == "B0GXYYZPBW"
+        assert category_label == "Milk Frothers"
+        assert source == "amazon:directBestSellersUrl"
+        assert "14042381" in url
+        return [
+            {"asin": "B333333333", "rank": 52, "title": "Other Frother"},
+            {"asin": "B0GXYYZPBW", "rank": 53, "title": "InstaWhisk Upgraded Milk Frother"},
+        ]
+
+    context = build_public_context(
+        asin="B0GXYYZPBW",
+        marketplace="US",
+        zipcode="10041",
+        core_keywords=["milk frother"],
+        pinned_competitor_asins=[],
+        excluded_competitor_asins=[],
+        client=client,
+        max_competitors=5,
+        max_keywords=1,
+        leaf_category_label="Milk Frothers",
+        leaf_category_node_id="14042381",
+        best_sellers_url="https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
+        direct_url_fetcher=fake_fetcher,
+    )
+
+    assert context["public_context_status"]["status"] == "partial"
+    assert "product_detail failed" in context["public_context_status"]["message"]
+    assert context["rank"]["own_bsr_leaf_rank"] == 53
+    assert context["rank"]["own_bsr_leaf_source"] == "amazon:directBestSellersUrl"

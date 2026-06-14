@@ -20,12 +20,15 @@ product:
   pangolin_include_best_sellers: true
   pangolin_include_new_releases: true
   pangolin_max_keywords: 3
+  pangolin_request_timeout_seconds: 8
+  market_context_background_timeout_seconds: 25
   pangolin_leaf_category_label: "Milk Frothers"
   pangolin_leaf_category_node_id: "14042381"
   pangolin_best_sellers_url: "https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden"
   pangolin_new_releases_url: "https://www.amazon.com/gp/new-releases/home-garden/14042381"
   amazon_direct_rank_fallback_enabled: true
   amazon_direct_rank_timeout_seconds: 8
+  amazon_direct_rank_max_pages: 2
   max_competitors: 10
   core_keywords:
     - milk frother
