@@ -1,6 +1,8 @@
+import json
 from pathlib import Path
 
 from scripts import generate_market_context_snapshot as snapshot_generator
+from src.market_context_snapshot import decrypt_snapshot_envelope, encrypt_snapshot
 
 
 def test_snapshot_generator_script_exists_with_expected_entrypoint():
@@ -34,6 +36,10 @@ def test_github_action_runs_offset_ten_minute_schedule_and_publishes_encrypted_d
     assert "MARKET_CONTEXT_ASIN" in text
     assert "Snapshot envelope:" in text
     assert "Data branch head:" in text
+    assert "for attempt in 1 2 3" in text
+    assert "Market context snapshot generation failed on attempt" in text
+    assert "Fetch previous encrypted snapshot" in text
+    assert "--fallback-encrypted-snapshot" in text
     assert "git push --force" in text
     assert "TENCENT_SSH_HOST" not in text
     assert "scp" not in text
@@ -54,6 +60,73 @@ def test_encrypted_snapshot_generation_requires_private_target_asin(monkeypatch,
     rc = snapshot_generator.main(["--encrypt", "--output", str(tmp_path / "latest.enc.json")])
 
     assert rc == 2
+
+
+def _complete_snapshot_with_listing(title: str) -> dict:
+    return {
+        "schema_version": "1.0",
+        "snapshot_status": "complete",
+        "captured_at": "2026-06-14T12:00:00Z",
+        "source_versions": {"generator": "test"},
+        "market_context": {
+            "public_listing": {
+                "title": title,
+                "price_display": "$39.99",
+                "rating": 4.8,
+                "review_count": 36,
+                "delivery_promise": "Mon, Jun 15",
+                "fulfillment_method": "FBA",
+                "coupon_present": False,
+                "deal_present": False,
+                "source": "previous",
+            },
+            "rank": {"own_bsr_leaf_rank": 53, "own_bsr_leaf_category": "Milk Frothers"},
+            "core_keywords": [{"keyword": "milk frother"}, {"keyword": "coffee frother"}, {"keyword": "handheld milk frother"}],
+            "market": {"selected_competitors": [{"asin": "B111111111"}]},
+            "public_context_status": {"status": "ok", "message": "Complete", "warnings": []},
+        },
+        "warnings": [],
+    }
+
+
+def test_snapshot_generator_reuses_previous_listing_when_current_listing_is_incomplete(monkeypatch, tmp_path):
+    current = _complete_snapshot_with_listing("Current")
+    current["market_context"]["public_listing"] = {
+        "source": "pangolin:amzProductDetail+amazon:directProductPage",
+        "missing_fields": ["title", "price_display", "rating", "review_count", "delivery_promise"],
+        "coupon_present": False,
+        "deal_present": False,
+    }
+    previous = _complete_snapshot_with_listing("Previous Complete Listing")
+    fallback_path = tmp_path / "previous.enc.json"
+    fallback_path.write_text(json.dumps(encrypt_snapshot(previous, key="secret-key")), encoding="utf-8")
+    output_path = tmp_path / "latest.enc.json"
+
+    monkeypatch.setenv("PANGOLINFO_API_TOKEN", "secret-token")
+    monkeypatch.setenv("MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY", "secret-key")
+    monkeypatch.setenv("MARKET_CONTEXT_ASIN", "B0SECRET001")
+    monkeypatch.setattr(snapshot_generator, "build_snapshot", lambda **kwargs: current)
+
+    rc = snapshot_generator.main(
+        [
+            "--encrypt",
+            "--fallback-encrypted-snapshot",
+            str(fallback_path),
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert rc == 0
+    envelope = json.loads(output_path.read_text())
+    snapshot = decrypt_snapshot_envelope(envelope, key="secret-key")
+    listing = snapshot["market_context"]["public_listing"]
+    assert listing["title"] == "Previous Complete Listing"
+    assert listing["price_display"] == "$39.99"
+    assert listing["source"] == "pangolin:amzProductDetail+amazon:directProductPage+previousSnapshot"
+    assert listing["missing_fields"] == []
+    assert snapshot["market_context"]["rank"]["own_bsr_leaf_rank"] == 53
+    assert "previous complete snapshot" in snapshot["warnings"][0]
 
 
 def test_snapshot_generator_failure_prints_safe_field_diagnostics(monkeypatch, tmp_path, capsys):

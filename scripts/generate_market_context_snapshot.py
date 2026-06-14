@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.config import load_targets
-from src.market_context_snapshot import encrypt_snapshot, validate_market_context_snapshot
+from src.market_context_snapshot import decrypt_snapshot_envelope, encrypt_snapshot, validate_market_context_snapshot
 from src.pangolin_client import PangolinClient
 from src.public_context import build_public_context, now_iso
 
@@ -65,6 +65,75 @@ def _list_value(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item).strip()]
     return [str(value)]
+
+
+PUBLIC_LISTING_FALLBACK_FIELDS = (
+    "title",
+    "price_display",
+    "rating",
+    "review_count",
+    "delivery_promise",
+    "fulfillment_method",
+    "coupon_present",
+    "deal_present",
+)
+
+
+def _missing_value(value: Any) -> bool:
+    return value in (None, "", [], {})
+
+
+def _public_listing_missing_fields(listing: Mapping[str, Any]) -> list[str]:
+    return [field for field in PUBLIC_LISTING_FALLBACK_FIELDS if _missing_value(listing.get(field))]
+
+
+def load_fallback_snapshot(path: Path, *, encryption_key: str) -> Optional[Dict[str, Any]]:
+    if not path.exists() or not path.is_file():
+        return None
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(parsed, Mapping):
+        return None
+    return decrypt_snapshot_envelope(parsed, key=encryption_key)
+
+
+def apply_previous_public_listing_fallback(snapshot: Dict[str, Any], previous_snapshot: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    if not previous_snapshot:
+        return snapshot
+    context = snapshot.get("market_context")
+    previous_context = previous_snapshot.get("market_context") if isinstance(previous_snapshot.get("market_context"), Mapping) else {}
+    if not isinstance(context, dict) or not isinstance(previous_context, Mapping):
+        return snapshot
+    listing = context.setdefault("public_listing", {})
+    previous_listing = previous_context.get("public_listing") if isinstance(previous_context.get("public_listing"), Mapping) else {}
+    if not isinstance(listing, dict) or not previous_listing:
+        return snapshot
+    missing_before = _public_listing_missing_fields(listing)
+    if not missing_before:
+        return snapshot
+    used_fields = []
+    for key, value in previous_listing.items():
+        if _missing_value(listing.get(key)) and not _missing_value(value):
+            listing[key] = value
+            used_fields.append(str(key))
+    if not used_fields:
+        return snapshot
+    current_source = str(listing.get("source") or "unknown")
+    if "previousSnapshot" not in current_source:
+        listing["source"] = f"{current_source}+previousSnapshot"
+    listing["missing_fields"] = _public_listing_missing_fields(listing)
+    warning = "public_listing reused from previous complete snapshot for missing fields: " + ", ".join(used_fields)
+    warnings = snapshot.setdefault("warnings", [])
+    if isinstance(warnings, list):
+        warnings.append(warning)
+    status = context.setdefault("public_context_status", {})
+    if isinstance(status, dict):
+        status_warnings = status.setdefault("warnings", [])
+        if isinstance(status_warnings, list):
+            status_warnings.append(warning)
+        message = str(status.get("message") or "")
+        if "previous complete snapshot" not in message:
+            status["message"] = (message + "; " if message else "") + warning
+    return snapshot
 
 
 def build_snapshot(*, targets: Mapping[str, Any], api_token: str) -> Dict[str, Any]:
@@ -154,6 +223,7 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser.add_argument("--targets", type=Path, default=Path("config/targets.yaml"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--encrypt", action="store_true", help="write encrypted snapshot envelope")
+    parser.add_argument("--fallback-encrypted-snapshot", type=Path, help="previous encrypted complete snapshot used only to fill missing public listing fields")
     return parser.parse_args(list(argv))
 
 
@@ -173,6 +243,13 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     targets = targets_with_env_overrides(load_targets(args.targets))
     try:
         snapshot = build_snapshot(targets=targets, api_token=api_token)
+        fallback_snapshot = None
+        if args.fallback_encrypted_snapshot and encryption_key:
+            try:
+                fallback_snapshot = load_fallback_snapshot(args.fallback_encrypted_snapshot, encryption_key=str(encryption_key))
+            except Exception as fallback_exc:
+                print(f"Previous snapshot fallback skipped: {type(fallback_exc).__name__}", file=sys.stderr)
+        snapshot = apply_previous_public_listing_fallback(snapshot, fallback_snapshot)
         snapshot = validate_market_context_snapshot(snapshot)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         if args.encrypt:
