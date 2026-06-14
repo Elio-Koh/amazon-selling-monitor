@@ -11,6 +11,7 @@ import json
 import os
 import re
 import time
+import urllib.parse
 from datetime import date
 from typing import Any, Dict, Iterable, Mapping, Optional
 
@@ -531,6 +532,35 @@ def clear_remote_market_context_snapshot_cache() -> None:
         clear()
 
 
+def market_context_snapshot_effective_url(
+    url: str,
+    targets: Mapping[str, Any],
+    *,
+    force_refresh: bool,
+) -> str:
+    bucket_seconds = max(target_int(targets, "market_context_snapshot_cache_bust_seconds", 60), 1)
+    params = {"_snapshot_bucket": str(int(time.time() // bucket_seconds))}
+    if force_refresh:
+        params["_snapshot_nonce"] = str(int(time.time() * 1000))
+    parsed = urllib.parse.urlparse(str(url))
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query = [(key, value) for key, value in query if key not in params]
+    query.extend(params.items())
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
+def market_context_banner_level(status: Optional[str]) -> Optional[str]:
+    if status in {"ok", "fresh"}:
+        return "success"
+    if status in {"partial", "stale"}:
+        return "warning"
+    if status in {"failed", "missing_token", "expired"}:
+        return "error"
+    if status == "loading":
+        return "info"
+    return None
+
+
 def market_context_from_snapshot(
     data: Dict[str, Any],
     targets: Mapping[str, Any],
@@ -543,6 +573,7 @@ def market_context_from_snapshot(
     )
     if not url:
         return None
+    base_url = str(url)
     if force_refresh:
         clear_remote_market_context_snapshot_cache()
         st.session_state.pop("market_context_snapshot_hot_cache", None)
@@ -561,8 +592,9 @@ def market_context_from_snapshot(
     timeout = target_int(targets, "market_context_snapshot_timeout_seconds", 5)
     stale_minutes = target_int(targets, "market_context_snapshot_stale_minutes", 10)
     expired_minutes = target_int(targets, "market_context_snapshot_expired_minutes", 120)
+    effective_url = market_context_snapshot_effective_url(base_url, targets, force_refresh=force_refresh)
     try:
-        snapshot = load_remote_market_context_snapshot(str(url), encryption_key, timeout)
+        snapshot = load_remote_market_context_snapshot(effective_url, encryption_key, timeout)
         result = apply_snapshot_to_dashboard(
             data,
             snapshot,
@@ -570,17 +602,17 @@ def market_context_from_snapshot(
             expired_minutes=expired_minutes,
         )
         st.session_state["market_context_snapshot_hot_cache"] = {
-            "url": str(url),
+            "url": base_url,
             "data": copy.deepcopy(result),
         }
         return result
     except Exception as exc:
         hot = st.session_state.get("market_context_snapshot_hot_cache")
-        if isinstance(hot, Mapping) and hot.get("url") == str(url):
+        if isinstance(hot, Mapping) and hot.get("url") == base_url:
             result = copy.deepcopy(hot["data"])
             status = result.setdefault("context", {}).setdefault("public_context_status", {})
             status["status"] = "stale"
-            status["message"] = f"Using last in-memory market context snapshot; remote snapshot read failed: {type(exc).__name__}: {exc}"
+            status["message"] = f"Using fallback in-memory market context snapshot; remote snapshot read failed: {type(exc).__name__}: {exc}"
             result.setdefault("source_status", {}).setdefault("warnings", []).append(status["message"])
             return result
         result = _market_context_preview(
@@ -1048,13 +1080,14 @@ def render_market_context_tab(
     context_data = market_context_render_data(data, dict(targets), force_refresh=force_refresh)
     public_status = context_data.get("context", {}).get("public_context_status", {})
     status = public_status.get("status") if isinstance(public_status, Mapping) else None
-    if status == "loading":
+    banner_level = market_context_banner_level(status)
+    if banner_level == "info":
         cols[1].info(public_status.get("message") or "Market context is loading in background.")
-    elif status == "ok":
+    elif banner_level == "success":
         cols[1].success("Market context is ready.")
-    elif status == "partial":
+    elif banner_level == "warning":
         cols[1].warning(public_status.get("message") or "Market context loaded with partial data.")
-    elif status in {"failed", "missing_token"}:
+    elif banner_level == "error":
         cols[1].error(public_status.get("message") or "Market context is unavailable.")
     render_context(context_data, summary, currency)
 
@@ -1094,9 +1127,9 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
     public_status = context.get("public_context_status") if isinstance(context.get("public_context_status"), Mapping) else {}
     public_status_name = public_status.get("status")
     public_status_message = public_status.get("message")
-    if public_status_name == "partial" and public_status_message:
+    if public_status_name in {"partial", "stale"} and public_status_message:
         st.warning(public_status_message)
-    elif public_status_name in {"failed", "missing_token"} and public_status_message:
+    elif public_status_name in {"failed", "missing_token", "expired"} and public_status_message:
         st.error(public_status_message)
 
     st.subheader("Context Quality")
@@ -1106,6 +1139,9 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
                 "Pulled At": data.get("pulled_at"),
                 "Public Context": context.get("public_context_status", {}).get("status") or "unknown",
                 "Public Context Note": context.get("public_context_status", {}).get("message") or "None",
+                "Snapshot Captured At": public_status.get("captured_at") or "None",
+                "Snapshot Age Minutes": public_status.get("snapshot_age_minutes") if public_status.get("snapshot_age_minutes") is not None else "None",
+                "Snapshot Source": public_status.get("source") or "None",
                 "Missing Fields": ", ".join(data["source_status"].get("missing_fields") or []) or "None",
                 "Warnings": len(data["source_status"].get("warnings") or []),
             }

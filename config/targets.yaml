@@ -23,6 +23,7 @@ product:
   pangolin_request_timeout_seconds: 8
   market_context_background_timeout_seconds: 25
   market_context_snapshot_refresh_minutes: 10
+  market_context_snapshot_cache_bust_seconds: 60
   market_context_snapshot_stale_minutes: 10
   market_context_snapshot_expired_minutes: 120
   market_context_snapshot_timeout_seconds: 5

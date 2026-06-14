@@ -11,6 +11,7 @@ from src.market_context_snapshot import (
     cleanup_history,
     decrypt_snapshot_envelope,
     encrypt_snapshot,
+    load_encrypted_snapshot_from_url,
     load_snapshot_from_url,
     snapshot_freshness,
     validate_market_context_snapshot,
@@ -141,6 +142,35 @@ def test_load_snapshot_from_url_uses_bearer_token(monkeypatch):
 
     assert snapshot["snapshot_status"] == "complete"
     assert captured_headers["Authorization"] == "Bearer secret"
+
+
+def test_load_encrypted_snapshot_from_url_sends_no_cache_headers(monkeypatch):
+    envelope = encrypt_snapshot(complete_snapshot(), key="unit-test-secret")
+    payload = json.dumps(envelope).encode("utf-8")
+    captured_headers = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return payload
+
+    def fake_urlopen(request, timeout):
+        captured_headers.update(dict(request.header_items()))
+        assert timeout == 3
+        return FakeResponse()
+
+    monkeypatch.setattr("src.market_context_snapshot.urllib.request.urlopen", fake_urlopen)
+
+    snapshot = load_encrypted_snapshot_from_url("https://example.test/latest.enc.json", key="unit-test-secret", timeout=3)
+
+    assert snapshot["snapshot_status"] == "complete"
+    assert captured_headers["Cache-control"] == "no-cache"
+    assert captured_headers["Pragma"] == "no-cache"
 
 
 def test_encrypt_snapshot_envelope_hides_plaintext_and_decrypts():

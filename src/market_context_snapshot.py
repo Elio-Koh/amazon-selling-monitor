@@ -192,7 +192,14 @@ def load_snapshot_from_url(url: str, *, token: Optional[str] = None, timeout: in
 
 
 def load_encrypted_snapshot_from_url(url: str, *, key: str, timeout: int = 5) -> Dict[str, Any]:
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        },
+    )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         payload = response.read().decode("utf-8")
     parsed = json.loads(payload)

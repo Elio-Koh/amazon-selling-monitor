@@ -591,6 +591,58 @@ def test_market_context_reads_remote_snapshot_when_configured(monkeypatch):
     assert result["context"]["public_context_status"]["source"] == "market_context_snapshot"
 
 
+def test_market_context_snapshot_effective_url_adds_time_bucket(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    monkeypatch.setattr(app.time, "time", lambda: 125.0)
+
+    url = app.market_context_snapshot_effective_url(
+        "https://example.test/latest.enc.json",
+        {"market_context_snapshot_cache_bust_seconds": 60},
+        force_refresh=False,
+    )
+
+    assert url == "https://example.test/latest.enc.json?_snapshot_bucket=2"
+
+
+def test_market_context_snapshot_effective_url_preserves_existing_query(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    monkeypatch.setattr(app.time, "time", lambda: 125.0)
+
+    url = app.market_context_snapshot_effective_url(
+        "https://example.test/latest.enc.json?raw=1",
+        {"market_context_snapshot_cache_bust_seconds": 60},
+        force_refresh=False,
+    )
+
+    assert url == "https://example.test/latest.enc.json?raw=1&_snapshot_bucket=2"
+
+
+def test_market_context_snapshot_force_refresh_adds_nonce_and_clears_hot_cache(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    app.st.session_state = SessionState()
+    app.st.session_state["market_context_snapshot_hot_cache"] = {"url": "https://example.test/latest.json", "data": {}}
+    data = {"context": {}, "source_status": {"warnings": []}}
+    targets = {"market_context_snapshot_url": "https://example.test/latest.json"}
+    called_urls = []
+    clear_calls = []
+
+    monkeypatch.setattr(app, "secrets_get", lambda key, default=None: "unit-test-secret" if key == "MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY" else default)
+    monkeypatch.setattr(app, "clear_remote_market_context_snapshot_cache", lambda: clear_calls.append("cleared"))
+
+    def capture_url(url, encryption_key, timeout=5):
+        called_urls.append(url)
+        raise TimeoutError("remote timeout")
+
+    monkeypatch.setattr(app, "load_remote_market_context_snapshot", capture_url)
+
+    result = app.market_context_from_snapshot(data, targets, force_refresh=True)
+
+    assert clear_calls == ["cleared"]
+    assert "market_context_snapshot_hot_cache" not in app.st.session_state
+    assert called_urls and "_snapshot_nonce=" in called_urls[0]
+    assert result["context"]["public_context_status"]["status"] == "failed"
+
+
 def test_market_context_uses_hot_cache_when_remote_snapshot_fails(monkeypatch):
     app = import_app_with_fake_streamlit(monkeypatch)
     app.st.session_state = SessionState()
@@ -619,6 +671,39 @@ def test_market_context_uses_hot_cache_when_remote_snapshot_fails(monkeypatch):
     assert result["context"]["rank"]["own_bsr_leaf_rank"] == 53
     assert result["context"]["public_context_status"]["status"] == "stale"
     assert "remote timeout" in result["context"]["public_context_status"]["message"]
+    assert "fallback" in result["context"]["public_context_status"]["message"].lower()
+
+
+def test_market_context_uses_hot_cache_by_base_url_when_effective_url_changes(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    app.st.session_state = SessionState()
+    base_url = "https://example.test/latest.json"
+    data = {"context": {}, "source_status": {"warnings": []}}
+    targets = {"market_context_snapshot_url": base_url, "market_context_snapshot_cache_bust_seconds": 60}
+    cached = {
+        "context": {
+            "public_context_status": {"status": "fresh", "message": "cached"},
+            "rank": {"own_bsr_leaf_rank": 53},
+        },
+        "source_status": {"warnings": []},
+    }
+    app.st.session_state["market_context_snapshot_hot_cache"] = {"url": base_url, "data": cached}
+    monkeypatch.setattr(app, "secrets_get", lambda key, default=None: "unit-test-secret" if key == "MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY" else default)
+    monkeypatch.setattr(app.time, "time", lambda: 125.0)
+    monkeypatch.setattr(app, "load_remote_market_context_snapshot", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("remote timeout")))
+
+    result = app.market_context_from_snapshot(data, targets, force_refresh=False)
+
+    assert result["context"]["rank"]["own_bsr_leaf_rank"] == 53
+    assert result["context"]["public_context_status"]["status"] == "stale"
+
+
+def test_market_context_banner_level_handles_snapshot_freshness(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+
+    assert app.market_context_banner_level("fresh") == "success"
+    assert app.market_context_banner_level("stale") == "warning"
+    assert app.market_context_banner_level("expired") == "error"
 
 
 def test_offer_value_formatting_uses_yes_no_and_none(monkeypatch):
