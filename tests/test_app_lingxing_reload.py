@@ -249,6 +249,28 @@ def test_own_ranking_values_use_major_and_leaf_rows(monkeypatch):
     assert "New Release Rank" not in values
 
 
+def test_own_ranking_values_hide_empty_new_release_major_rows(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+
+    values = app.own_ranking_values(
+        {
+            "own_bsr_major_rank": 32132,
+            "own_bsr_major_category": "Home & Kitchen",
+            "own_bsr_leaf_rank": 53,
+            "own_bsr_leaf_category": "Milk Frothers",
+            "own_new_release_leaf_rank": 4,
+            "own_new_release_leaf_category": "Milk Frothers",
+            "own_new_release_leaf_source": "pangolin:amzNewReleases",
+            "bsr_capture_status": "measured",
+        }
+    )
+
+    assert "New Release Major Category Rank" not in values
+    assert "New Release Major Category" not in values
+    assert values["New Release Leaf Category Rank"] == "4"
+    assert values["New Release Leaf Category"] == "Milk Frothers"
+
+
 def test_date_inputs_for_yesterday_show_resolved_window(monkeypatch):
     app = import_app_with_fake_streamlit(monkeypatch)
     calls = []

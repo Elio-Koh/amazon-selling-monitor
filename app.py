@@ -1213,19 +1213,27 @@ def render_key_values(values: Mapping[str, Any]) -> None:
 
 
 def own_ranking_values(rank: Mapping[str, Any]) -> Dict[str, Any]:
-    return {
+    values = {
         "BSR Major Category Rank": safe_text(rank.get("own_bsr_major_rank")),
         "BSR Major Category": safe_text(rank.get("own_bsr_major_category")),
         "BSR Leaf Category Rank": safe_text(rank.get("own_bsr_leaf_rank")),
         "BSR Leaf Category": safe_text(rank.get("own_bsr_leaf_category")),
         "BSR Leaf Source": safe_text(rank.get("own_bsr_leaf_source")),
-        "New Release Major Category Rank": safe_text(rank.get("own_new_release_major_rank")),
-        "New Release Major Category": safe_text(rank.get("own_new_release_major_category")),
         "New Release Leaf Category Rank": safe_text(rank.get("own_new_release_leaf_rank")),
         "New Release Leaf Category": safe_text(rank.get("own_new_release_leaf_category")),
         "New Release Leaf Source": safe_text(rank.get("own_new_release_leaf_source")),
         "BSR Capture Status": safe_text(rank.get("bsr_capture_status")),
     }
+    new_release_major_rank = safe_text(rank.get("own_new_release_major_rank"))
+    new_release_major_category = safe_text(rank.get("own_new_release_major_category"))
+    if new_release_major_rank != "-" or new_release_major_category != "-":
+        values = {
+            **dict(list(values.items())[:5]),
+            "New Release Major Category Rank": new_release_major_rank,
+            "New Release Major Category": new_release_major_category,
+            **dict(list(values.items())[5:]),
+        }
+    return values
 
 
 def _core_keyword_table(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:

@@ -429,6 +429,16 @@ def _own_bsr_ranks_from_listing(listing: Mapping[str, Any]) -> Dict[str, Any]:
     return own_rank
 
 
+def _configured_leaf_bsr_needed(own_rank: Mapping[str, Any], configured_label: Optional[str]) -> bool:
+    if own_rank.get("own_bsr_leaf_rank") is None:
+        return True
+    label = first_text(configured_label)
+    if not label:
+        return False
+    current = first_text(own_rank.get("own_bsr_leaf_category"))
+    return not current or current.lower() != label.lower()
+
+
 def _normalize_category_rows(
     *,
     rows: List[Mapping[str, Any]],
@@ -919,7 +929,7 @@ def build_public_context(
         bsr_capture_attempts.extend(attempts)
         own_category_rank.update({key: value for key, value in own_rank.items() if value is not None})
 
-    if direct_url_fallback_enabled and own_category_rank.get("own_bsr_leaf_rank") is None and first_text(best_sellers_url):
+    if direct_url_fallback_enabled and _configured_leaf_bsr_needed(own_category_rank, leaf_category_label) and first_text(best_sellers_url):
         leaf_label = first_text(leaf_category_label) or str(category_label or "category")
         source = "amazon:directBestSellersUrl"
         category_url = first_text(best_sellers_url)
@@ -967,6 +977,10 @@ def build_public_context(
             competitor_rows.extend([row for row in normalized if row.get("competitor_asin") != own_asin])
             bsr_capture_attempts.extend(attempts)
             own_category_rank.update({key: value for key, value in own_rank.items() if value is not None})
+
+    if _configured_leaf_bsr_needed(own_category_rank, leaf_category_label):
+        for key in ("own_bsr_leaf_rank", "own_bsr_leaf_category", "own_bsr_leaf_source"):
+            own_category_rank.pop(key, None)
 
     if direct_url_fallback_enabled and own_category_rank.get("own_new_release_leaf_rank") is None and first_text(new_releases_url):
         leaf_label = first_text(leaf_category_label) or str(category_label or "category")

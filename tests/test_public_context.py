@@ -154,6 +154,17 @@ class DirectUrlFallbackPangolinClient(FakePangolinClient):
         ]
 
 
+class ProductDetailWrongLeafPangolinClient(DirectUrlFallbackPangolinClient):
+    def product_detail(self, *, asin, site, zipcode):
+        product = super(DirectUrlFallbackPangolinClient, self).product_detail(asin=asin, site=site, zipcode=zipcode)
+        product["category_id"] = ""
+        product["bestSellersRankItems"] = [
+            {"rank": "#32132", "category": "Home & Kitchen"},
+            {"rank": "#831", "category": "Kitchen Small Appliances"},
+        ]
+        return product
+
+
 class ProductDetailFailurePangolinClient(FakePangolinClient):
     def product_detail(self, *, asin, site, zipcode):
         raise TimeoutError("Pangolin product detail timed out")
@@ -415,6 +426,43 @@ def test_build_public_context_uses_direct_url_fallback_when_pangolin_leaf_list_m
     assert context["rank"]["own_bsr_leaf_source"] == "amazon:directBestSellersUrl"
     assert any(
         row["source"] == "amazon:directBestSellersUrl" and row["bsr_capture_status"] == "measured"
+        for row in context["rank"]["bsr_capture_attempts"]
+    )
+
+
+def test_configured_leaf_bsr_overrides_product_detail_intermediate_category():
+    client = ProductDetailWrongLeafPangolinClient()
+
+    def fake_fetcher(url, *, asin, category_label, source, timeout):
+        assert asin == "B0TEST0001"
+        assert category_label == "Milk Frothers"
+        assert source == "amazon:directBestSellersUrl"
+        return [
+            {"asin": "B333333333", "rank": 52, "title": "Other Frother"},
+            {"asin": "B0TEST0001", "rank": 53, "title": "SampleWhisk Upgraded Milk Frother"},
+        ]
+
+    context = build_public_context(
+        asin="B0TEST0001",
+        marketplace="US",
+        zipcode="10041",
+        core_keywords=["milk frother"],
+        pinned_competitor_asins=[],
+        excluded_competitor_asins=[],
+        client=client,
+        max_competitors=5,
+        max_keywords=1,
+        leaf_category_label="Milk Frothers",
+        leaf_category_node_id="14042381",
+        best_sellers_url="https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
+        direct_url_fetcher=fake_fetcher,
+    )
+
+    assert context["rank"]["own_bsr_leaf_rank"] == 53
+    assert context["rank"]["own_bsr_leaf_category"] == "Milk Frothers"
+    assert context["rank"]["own_bsr_leaf_source"] == "amazon:directBestSellersUrl"
+    assert any(
+        row["source"] == "pangolin:amzProductDetail" and row["category"] == "Kitchen Small Appliances"
         for row in context["rank"]["bsr_capture_attempts"]
     )
 
