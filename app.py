@@ -22,6 +22,7 @@ from src import metrics
 from src import public_context
 from src.config import load_targets
 from src.date_windows import PRESETS, DateWindow, resolve_date_window, today_for_timezone
+from src.market_context_snapshot import apply_snapshot_to_dashboard, load_encrypted_snapshot_from_url
 from src.pangolin_client import PangolinClient, PangolinError
 
 
@@ -519,7 +520,86 @@ def _submit_market_context_job(data: Dict[str, Any], targets: Mapping[str, Any],
     )
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def load_remote_market_context_snapshot(url: str, encryption_key: str, timeout: int = 5) -> Dict[str, Any]:
+    return load_encrypted_snapshot_from_url(url, key=encryption_key, timeout=timeout)
+
+
+def clear_remote_market_context_snapshot_cache() -> None:
+    clear = getattr(load_remote_market_context_snapshot, "clear", None)
+    if callable(clear):
+        clear()
+
+
+def market_context_from_snapshot(
+    data: Dict[str, Any],
+    targets: Mapping[str, Any],
+    *,
+    force_refresh: bool,
+) -> Optional[Dict[str, Any]]:
+    url = (
+        secrets_get("MARKET_CONTEXT_SNAPSHOT_URL")
+        or targets.get("market_context_snapshot_url")
+    )
+    if not url:
+        return None
+    if force_refresh:
+        clear_remote_market_context_snapshot_cache()
+        st.session_state.pop("market_context_snapshot_hot_cache", None)
+    encryption_key = str(secrets_get("MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY") or "")
+    if not encryption_key:
+        result = _market_context_preview(
+            data,
+            "missing_token",
+            "MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY is not configured.",
+            targets,
+        )
+        result.setdefault("source_status", {}).setdefault("warnings", []).append(
+            "Market context snapshot skipped: MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY is not configured."
+        )
+        return result
+    timeout = target_int(targets, "market_context_snapshot_timeout_seconds", 5)
+    stale_minutes = target_int(targets, "market_context_snapshot_stale_minutes", 10)
+    expired_minutes = target_int(targets, "market_context_snapshot_expired_minutes", 120)
+    try:
+        snapshot = load_remote_market_context_snapshot(str(url), encryption_key, timeout)
+        result = apply_snapshot_to_dashboard(
+            data,
+            snapshot,
+            stale_minutes=stale_minutes,
+            expired_minutes=expired_minutes,
+        )
+        st.session_state["market_context_snapshot_hot_cache"] = {
+            "url": str(url),
+            "data": copy.deepcopy(result),
+        }
+        return result
+    except Exception as exc:
+        hot = st.session_state.get("market_context_snapshot_hot_cache")
+        if isinstance(hot, Mapping) and hot.get("url") == str(url):
+            result = copy.deepcopy(hot["data"])
+            status = result.setdefault("context", {}).setdefault("public_context_status", {})
+            status["status"] = "stale"
+            status["message"] = f"Using last in-memory market context snapshot; remote snapshot read failed: {type(exc).__name__}: {exc}"
+            result.setdefault("source_status", {}).setdefault("warnings", []).append(status["message"])
+            return result
+        result = _market_context_preview(
+            data,
+            "failed",
+            f"Market context snapshot read failed: {type(exc).__name__}: {exc}",
+            targets,
+        )
+        result.setdefault("source_status", {}).setdefault("warnings", []).append(
+            f"Market context snapshot read failed: {type(exc).__name__}: {exc}"
+        )
+        return result
+
+
 def market_context_render_data(data: Dict[str, Any], targets: Mapping[str, Any], *, force_refresh: bool) -> Dict[str, Any]:
+    snapshot_result = market_context_from_snapshot(data, targets, force_refresh=force_refresh)
+    if snapshot_result is not None:
+        return snapshot_result
+
     if "market_context_counter" not in st.session_state:
         st.session_state["market_context_counter"] = 0
     if force_refresh:

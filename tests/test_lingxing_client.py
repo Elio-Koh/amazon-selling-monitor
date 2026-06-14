@@ -39,7 +39,7 @@ def install_fake_mcp(monkeypatch, *, streamable_initialize_error=None):
 
         async def list_tools(self):
             calls.append(("list_tools", self.streams))
-            suffix = "B0GXYYZPBW"
+            suffix = "B0TEST0001"
             return SimpleNamespace(
                 tools=[
                     SimpleNamespace(name=f"get_orders_{suffix}"),
@@ -79,25 +79,25 @@ async def fake_call_known_tools(session, tool_names, **kwargs):
 def test_streamable_http_transport_uses_two_streams_and_preserves_module_url(monkeypatch):
     calls = install_fake_mcp(monkeypatch)
     client = LingxingClient(
-        server_url="http://example.test/lingxing_config_B0GXYYZPBW/",
-        asin="B0GXYYZPBW",
+        server_url="http://example.test/lingxing_config_B0TEST0001/",
+        asin="B0TEST0001",
         transport="streamable_http",
     )
     monkeypatch.setattr(client, "_call_known_tools", fake_call_known_tools)
 
     payload = asyncio.run(client.fetch_live_payload())
 
-    assert ("streamable_http_client", "http://example.test/lingxing_config_B0GXYYZPBW/") in calls
+    assert ("streamable_http_client", "http://example.test/lingxing_config_B0TEST0001/") in calls
     assert ("client_session", ("stream_read", "stream_write")) in calls
     assert not any(call[0] == "sse_client" for call in calls)
-    assert payload["tool_names"][0] == "get_orders_B0GXYYZPBW"
+    assert payload["tool_names"][0] == "get_orders_B0TEST0001"
 
 
 def test_sse_transport_still_uses_sse_client(monkeypatch):
     calls = install_fake_mcp(monkeypatch)
     client = LingxingClient(
         server_url="http://example.test/legacy-sse",
-        asin="B0GXYYZPBW",
+        asin="B0TEST0001",
         transport="sse",
     )
     monkeypatch.setattr(client, "_call_known_tools", fake_call_known_tools)
@@ -107,24 +107,24 @@ def test_sse_transport_still_uses_sse_client(monkeypatch):
     assert ("sse_client", "http://example.test/legacy-sse") in calls
     assert ("client_session", ("sse_read", "sse_write")) in calls
     assert not any(call[0] == "streamable_http_client" for call in calls)
-    assert payload["tool_names"][0] == "get_orders_B0GXYYZPBW"
+    assert payload["tool_names"][0] == "get_orders_B0TEST0001"
 
 
 def test_auto_transport_falls_back_to_sse_when_streamable_initialize_fails(monkeypatch):
     calls = install_fake_mcp(monkeypatch, streamable_initialize_error=RuntimeError("streamable failed"))
     client = LingxingClient(
-        server_url="http://example.test/lingxing_config_B0GXYYZPBW/",
-        asin="B0GXYYZPBW",
+        server_url="http://example.test/lingxing_config_B0TEST0001/",
+        asin="B0TEST0001",
         transport="auto",
     )
     monkeypatch.setattr(client, "_call_known_tools", fake_call_known_tools)
 
     payload = asyncio.run(client.fetch_live_payload())
 
-    assert ("streamable_http_client", "http://example.test/lingxing_config_B0GXYYZPBW/") in calls
-    assert ("sse_client", "http://example.test/lingxing_config_B0GXYYZPBW/") in calls
+    assert ("streamable_http_client", "http://example.test/lingxing_config_B0TEST0001/") in calls
+    assert ("sse_client", "http://example.test/lingxing_config_B0TEST0001/") in calls
     assert ("client_session", ("sse_read", "sse_write")) in calls
-    assert payload["tool_names"][0] == "get_orders_B0GXYYZPBW"
+    assert payload["tool_names"][0] == "get_orders_B0TEST0001"
 
 
 def test_call_known_tools_uses_default_date_range_for_current_lingxing_tools(monkeypatch):
@@ -139,27 +139,27 @@ def test_call_known_tools_uses_default_date_range_for_current_lingxing_tools(mon
             elif name.startswith("get_asin_sales"):
                 body = {"total_units": 1}
             elif name.startswith("list_campaigns_with_date"):
-                body = {"campaigns": [{"campaign_id": "c1", "campaign_name": "SC_B0GXYYZPBW_MF04"}]}
+                body = {"campaigns": [{"campaign_id": "c1", "campaign_name": "SC_B0TEST0001_MF04"}]}
             else:
                 body = {"title": "Sample listing"}
             return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(body))])
 
     tool_names = [
-        "list_campaigns_with_date_and_portfolio_with_config_B0GXYYZPBW",
-        "get_product_listing_B0GXYYZPBW",
-        "get_asin_sales_B0GXYYZPBW",
-        "get_orders_B0GXYYZPBW",
+        "list_campaigns_with_date_and_portfolio_with_config_B0TEST0001",
+        "get_product_listing_B0TEST0001",
+        "get_asin_sales_B0TEST0001",
+        "get_orders_B0TEST0001",
     ]
-    client = LingxingClient("http://example.test/lingxing_config_B0GXYYZPBW/", asin="B0GXYYZPBW")
+    client = LingxingClient("http://example.test/lingxing_config_B0TEST0001/", asin="B0TEST0001")
 
     payload = asyncio.run(client._call_known_tools(FakeSession(), tool_names))
 
     assert payload["orders"]["total_orders"] == 1
     assert payload["asin_sales"]["total_units"] == 1
     assert payload["campaigns"][0]["campaign_id"] == "c1"
-    assert ("get_orders_B0GXYYZPBW", {"start_date": "2026-06-11", "end_date": "2026-06-11"}) in calls
-    assert ("get_asin_sales_B0GXYYZPBW", {"start_date": "2026-06-11", "end_date": "2026-06-11"}) in calls
-    assert ("list_campaigns_with_date_and_portfolio_with_config_B0GXYYZPBW", {"start_date": "2026-06-11", "end_date": "2026-06-11", "page": 1, "length": 50}) in calls
+    assert ("get_orders_B0TEST0001", {"start_date": "2026-06-11", "end_date": "2026-06-11"}) in calls
+    assert ("get_asin_sales_B0TEST0001", {"start_date": "2026-06-11", "end_date": "2026-06-11"}) in calls
+    assert ("list_campaigns_with_date_and_portfolio_with_config_B0TEST0001", {"start_date": "2026-06-11", "end_date": "2026-06-11", "page": 1, "length": 50}) in calls
 
 
 def test_call_known_tools_uses_selected_date_window():
@@ -179,12 +179,12 @@ def test_call_known_tools_uses_selected_date_window():
             return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(body))])
 
     tool_names = [
-        "list_campaigns_with_date_and_portfolio_with_config_B0GXYYZPBW",
-        "get_product_listing_B0GXYYZPBW",
-        "get_asin_sales_B0GXYYZPBW",
-        "get_orders_B0GXYYZPBW",
+        "list_campaigns_with_date_and_portfolio_with_config_B0TEST0001",
+        "get_product_listing_B0TEST0001",
+        "get_asin_sales_B0TEST0001",
+        "get_orders_B0TEST0001",
     ]
-    client = LingxingClient("http://example.test/lingxing_config_B0GXYYZPBW/", asin="B0GXYYZPBW")
+    client = LingxingClient("http://example.test/lingxing_config_B0TEST0001/", asin="B0TEST0001")
 
     payload = asyncio.run(
         client._call_known_tools(
@@ -196,9 +196,9 @@ def test_call_known_tools_uses_selected_date_window():
     )
 
     assert payload["date_window"] == {"start_date": "2026-06-05", "end_date": "2026-06-11"}
-    assert ("get_orders_B0GXYYZPBW", {"start_date": "2026-06-05", "end_date": "2026-06-11"}) in calls
-    assert ("get_asin_sales_B0GXYYZPBW", {"start_date": "2026-06-05", "end_date": "2026-06-11"}) in calls
-    assert ("list_campaigns_with_date_and_portfolio_with_config_B0GXYYZPBW", {"start_date": "2026-06-05", "end_date": "2026-06-11", "page": 1, "length": 50}) in calls
+    assert ("get_orders_B0TEST0001", {"start_date": "2026-06-05", "end_date": "2026-06-11"}) in calls
+    assert ("get_asin_sales_B0TEST0001", {"start_date": "2026-06-05", "end_date": "2026-06-11"}) in calls
+    assert ("list_campaigns_with_date_and_portfolio_with_config_B0TEST0001", {"start_date": "2026-06-05", "end_date": "2026-06-11", "page": 1, "length": 50}) in calls
 
 
 def test_call_known_tools_records_optional_context_failures():
@@ -217,13 +217,13 @@ def test_call_known_tools_records_optional_context_failures():
             return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(body))])
 
     tool_names = [
-        "list_campaigns_with_date_and_portfolio_with_config_B0GXYYZPBW",
-        "get_product_listing_B0GXYYZPBW",
-        "get_asin_sales_B0GXYYZPBW",
-        "get_orders_B0GXYYZPBW",
-        "list_placement_profile_B0GXYYZPBW",
+        "list_campaigns_with_date_and_portfolio_with_config_B0TEST0001",
+        "get_product_listing_B0TEST0001",
+        "get_asin_sales_B0TEST0001",
+        "get_orders_B0TEST0001",
+        "list_placement_profile_B0TEST0001",
     ]
-    client = LingxingClient("http://example.test/lingxing_config_B0GXYYZPBW/", asin="B0GXYYZPBW")
+    client = LingxingClient("http://example.test/lingxing_config_B0TEST0001/", asin="B0TEST0001")
 
     payload = asyncio.run(client._call_known_tools(FakeSession(), tool_names))
 
@@ -238,7 +238,7 @@ def test_normalize_dashboard_payload_handles_lingxing_string_metrics_and_manual_
         "campaigns": [
             {
                 "campaign_id": "173844737302109",
-                "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+                "campaign_name": "SC_B0TEST0001_MF04_Frother_P_260610",
                 "campaign_type": "manual",
                 "spends": "12.46",
                 "sales": "39.99",
@@ -265,8 +265,8 @@ def test_normalize_dashboard_payload_extracts_sales_and_campaigns():
         "orders": {"total_orders": 80, "total_sale_total": 1000, "currency_code": "USD"},
         "asin_sales": {"total_units": 90},
         "campaigns": [
-            {"campaign_id": "sp-1", "campaign_name": "LH-B0GXYYZPBW-SP-exact", "spend": 100, "sales": 240, "orders": 8},
-            {"campaign_id": "sd-1", "campaign_name": "LH-B0GXYYZPBW-SD-retarget", "spend": 20, "sales": 30, "orders": 1},
+            {"campaign_id": "sp-1", "campaign_name": "LH-B0TEST0001-SP-exact", "spend": 100, "sales": 240, "orders": 8},
+            {"campaign_id": "sd-1", "campaign_name": "LH-B0TEST0001-SD-retarget", "spend": 20, "sales": 30, "orders": 1},
         ],
         "listing": {"title": "Sample product", "fba_fulfillable": 120},
         "pulled_at": "2026-06-12T08:00:00Z",
@@ -347,7 +347,7 @@ def test_normalize_dashboard_payload_records_missing_parent_sales():
 
 def test_build_blocked_dashboard_does_not_return_fixture_metrics():
     dashboard = build_blocked_dashboard(
-        asin="B0GXYYZPBW",
+        asin="B0TEST0001",
         mode="live_blocked",
         reason="HTTP 404 Not Found",
     )

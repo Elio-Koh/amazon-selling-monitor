@@ -114,8 +114,8 @@ def test_create_lingxing_client_reloads_when_transport_keyword_hits_stale_class(
     monkeypatch.setattr(app.importlib, "reload", fake_reload)
 
     client = app.create_lingxing_client(
-        server_url="http://example.test/lingxing_config_B0GXYYZPBW/",
-        asin="B0GXYYZPBW",
+        server_url="http://example.test/lingxing_config_B0TEST0001/",
+        asin="B0TEST0001",
         transport="streamable_http",
     )
 
@@ -139,8 +139,8 @@ def test_fetch_dashboard_reloads_when_start_date_keyword_hits_stale_method(monke
     monkeypatch.setattr(app.importlib, "reload", fake_reload)
 
     payload = app.fetch_dashboard_with_reload(
-        server_url="http://example.test/lingxing_config_B0GXYYZPBW/",
-        asin="B0GXYYZPBW",
+        server_url="http://example.test/lingxing_config_B0TEST0001/",
+        asin="B0TEST0001",
         transport="streamable_http",
         start_date="2026-06-11",
         end_date="2026-06-11",
@@ -200,7 +200,7 @@ def test_build_public_context_reloads_when_leaf_keyword_hits_stale_function(monk
     monkeypatch.setattr(app.importlib, "reload", fake_reload)
 
     result = app.build_public_context_with_reload(
-        asin="B0GXYYZPBW",
+        asin="B0TEST0001",
         marketplace="US",
         zipcode="10041",
         core_keywords=["milk frother"],
@@ -277,7 +277,7 @@ def test_date_inputs_for_yesterday_show_resolved_window(monkeypatch):
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
 
-    window = app.render_header({"asin": "B0GXYYZPBW", "marketplace": "US"})
+    window = app.render_header({"asin": "B0TEST0001", "marketplace": "US"})
 
     assert window.start_date == "2026-06-11"
     assert ("date_input", "Start Date", "2026-06-11", False) in calls
@@ -308,7 +308,7 @@ def test_date_inputs_allow_manual_override_of_preset(monkeypatch):
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
 
-    window = app.render_header({"asin": "B0GXYYZPBW", "marketplace": "US"})
+    window = app.render_header({"asin": "B0TEST0001", "marketplace": "US"})
 
     assert window.preset == "Custom"
     assert window.label == "Jun 1 - Jun 3"
@@ -319,7 +319,7 @@ def test_date_inputs_allow_manual_override_of_preset(monkeypatch):
 def test_enrich_public_context_without_token_preserves_configured_keywords(monkeypatch):
     app = import_app_with_fake_streamlit(monkeypatch)
     data = {
-        "asin": "B0GXYYZPBW",
+        "asin": "B0TEST0001",
         "context": {"listing": {"title": "Sample milk frother"}},
         "source_status": {"warnings": []},
     }
@@ -327,7 +327,7 @@ def test_enrich_public_context_without_token_preserves_configured_keywords(monke
     enriched = app.enrich_public_context(
         data,
         {
-            "asin": "B0GXYYZPBW",
+            "asin": "B0TEST0001",
             "marketplace": "US",
             "core_keywords": ["milk frother", "coffee frother"],
         },
@@ -342,7 +342,7 @@ def test_enrich_public_context_without_token_preserves_configured_keywords(monke
 def test_load_market_context_downgrades_unexpected_timeout(monkeypatch):
     app = import_app_with_fake_streamlit(monkeypatch)
     data = {
-        "asin": "B0GXYYZPBW",
+        "asin": "B0TEST0001",
         "context": {"listing": {"title": "Sample milk frother"}},
         "source_status": {"warnings": []},
     }
@@ -356,7 +356,7 @@ def test_load_market_context_downgrades_unexpected_timeout(monkeypatch):
         1,
         data,
         {
-            "asin": "B0GXYYZPBW",
+            "asin": "B0TEST0001",
             "marketplace": "US",
             "core_keywords": ["milk frother", "coffee frother"],
         },
@@ -373,13 +373,13 @@ def test_market_context_starts_background_fetch_without_blocking(monkeypatch):
     app = import_app_with_fake_streamlit(monkeypatch)
     app.st.session_state = SessionState()
     data = {
-        "asin": "B0GXYYZPBW",
+        "asin": "B0TEST0001",
         "pulled_at": "2026-06-14T00:00:00Z",
         "date_window": {"start_date": "2026-06-13", "end_date": "2026-06-13"},
         "context": {"listing": {"title": "Sample milk frother"}},
         "source_status": {"warnings": []},
     }
-    targets = {"asin": "B0GXYYZPBW", "marketplace": "US", "core_keywords": ["milk frother"]}
+    targets = {"asin": "B0TEST0001", "marketplace": "US", "core_keywords": ["milk frother"]}
     submitted = []
 
     class PendingFuture:
@@ -387,6 +387,7 @@ def test_market_context_starts_background_fetch_without_blocking(monkeypatch):
             return False
 
     monkeypatch.setattr(app, "secrets_get", lambda key, default=None: "token-123" if key == "PANGOLINFO_API_TOKEN" else default)
+    monkeypatch.setattr(app, "market_context_from_snapshot", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_submit_market_context_job", lambda data, targets, token: submitted.append((data, targets, token)) or PendingFuture())
     monkeypatch.setattr(
         app,
@@ -405,7 +406,7 @@ def test_market_context_uses_completed_background_result(monkeypatch):
     app = import_app_with_fake_streamlit(monkeypatch)
     app.st.session_state = SessionState()
     data = {
-        "asin": "B0GXYYZPBW",
+        "asin": "B0TEST0001",
         "pulled_at": "2026-06-14T00:00:00Z",
         "date_window": {"start_date": "2026-06-13", "end_date": "2026-06-13"},
         "context": {"listing": {"title": "Sample milk frother"}},
@@ -430,10 +431,11 @@ def test_market_context_uses_completed_background_result(monkeypatch):
         def result(self):
             return enriched
 
-    key = app.market_context_request_key(data, {"asin": "B0GXYYZPBW"}, 0)
+    key = app.market_context_request_key(data, {"asin": "B0TEST0001"}, 0)
     app.st.session_state["market_context_future"] = {"key": key, "future": DoneFuture()}
+    monkeypatch.setattr(app, "market_context_from_snapshot", lambda *args, **kwargs: None)
 
-    result = app.market_context_render_data(data, {"asin": "B0GXYYZPBW"}, force_refresh=False)
+    result = app.market_context_render_data(data, {"asin": "B0TEST0001"}, force_refresh=False)
 
     assert result is enriched
     assert app.st.session_state["market_context_result"]["data"] is enriched
@@ -443,14 +445,14 @@ def test_market_context_pending_future_times_out_without_resubmitting(monkeypatc
     app = import_app_with_fake_streamlit(monkeypatch)
     app.st.session_state = SessionState()
     data = {
-        "asin": "B0GXYYZPBW",
+        "asin": "B0TEST0001",
         "pulled_at": "2026-06-14T00:00:00Z",
         "date_window": {"start_date": "2026-06-13", "end_date": "2026-06-13"},
         "context": {"listing": {"title": "Sample milk frother"}},
         "source_status": {"warnings": []},
     }
     targets = {
-        "asin": "B0GXYYZPBW",
+        "asin": "B0TEST0001",
         "marketplace": "US",
         "core_keywords": ["milk frother"],
         "market_context_background_timeout_seconds": 25,
@@ -465,6 +467,7 @@ def test_market_context_pending_future_times_out_without_resubmitting(monkeypatc
     key = app.market_context_request_key(data, targets, 0)
     app.st.session_state["market_context_future"] = {"key": key, "future": future, "started_at": 0.0}
     monkeypatch.setattr(app, "market_context_now", lambda: 31.0, raising=False)
+    monkeypatch.setattr(app, "market_context_from_snapshot", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_submit_market_context_job", lambda *args: submitted.append(args) or future)
 
     result = app.market_context_render_data(data, targets, force_refresh=False)
@@ -480,13 +483,13 @@ def test_market_context_completed_future_replaces_timeout_preview(monkeypatch):
     app = import_app_with_fake_streamlit(monkeypatch)
     app.st.session_state = SessionState()
     data = {
-        "asin": "B0GXYYZPBW",
+        "asin": "B0TEST0001",
         "pulled_at": "2026-06-14T00:00:00Z",
         "date_window": {"start_date": "2026-06-13", "end_date": "2026-06-13"},
         "context": {"listing": {"title": "Sample milk frother"}},
         "source_status": {"warnings": []},
     }
-    targets = {"asin": "B0GXYYZPBW", "marketplace": "US", "core_keywords": ["milk frother"]}
+    targets = {"asin": "B0TEST0001", "marketplace": "US", "core_keywords": ["milk frother"]}
     enriched = {
         **data,
         "context": {
@@ -513,12 +516,87 @@ def test_market_context_completed_future_replaces_timeout_preview(monkeypatch):
         "data": app._market_context_preview(data, "partial", "Market context timed out.", targets),
         "preview": True,
     }
+    monkeypatch.setattr(app, "market_context_from_snapshot", lambda *args, **kwargs: None)
 
     result = app.market_context_render_data(data, targets, force_refresh=False)
 
     assert result is enriched
     assert app.st.session_state["market_context_result"]["data"] is enriched
     assert "preview" not in app.st.session_state["market_context_result"]
+
+
+def test_market_context_reads_remote_snapshot_when_configured(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    app.st.session_state = SessionState()
+    data = {"context": {"listing": {"title": "Lingxing"}}, "source_status": {"warnings": []}}
+    targets = {
+        "market_context_snapshot_url": "https://example.test/latest.json",
+        "market_context_snapshot_stale_minutes": 10,
+        "market_context_snapshot_expired_minutes": 120,
+    }
+    snapshot = {
+        "schema_version": "1.0",
+        "snapshot_status": "complete",
+        "captured_at": "2026-06-14T12:00:00Z",
+        "source_versions": {"generator": "test"},
+        "market_context": {
+            "public_listing": {
+                "title": "SampleWhisk Milk Frother",
+                "price_display": "$39.99",
+                "rating": 4.8,
+                "review_count": 36,
+                "delivery_promise": "Mon, Jun 15",
+                "fulfillment_method": "FBA",
+                "coupon_present": False,
+                "deal_present": False,
+            },
+            "rank": {"own_bsr_leaf_rank": 53, "own_bsr_leaf_category": "Milk Frothers"},
+            "core_keywords": [{"keyword": "milk frother"}, {"keyword": "coffee frother"}, {"keyword": "handheld milk frother"}],
+            "market": {"selected_competitors": [{"asin": "B111111111"}]},
+            "public_context_status": {"status": "ok", "message": "Complete"},
+        },
+        "warnings": [],
+    }
+
+    monkeypatch.setattr(app, "secrets_get", lambda key, default=None: "unit-test-secret" if key == "MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY" else default)
+    monkeypatch.setattr(app, "load_remote_market_context_snapshot", lambda url, encryption_key, timeout=5: snapshot)
+    monkeypatch.setattr(app, "_submit_market_context_job", lambda *args: (_ for _ in ()).throw(AssertionError("snapshot mode should not submit live job")))
+
+    result = app.market_context_render_data(data, targets, force_refresh=False)
+
+    assert result["context"]["public_listing"]["title"] == "SampleWhisk Milk Frother"
+    assert result["context"]["rank"]["own_bsr_leaf_rank"] == 53
+    assert result["context"]["public_context_status"]["source"] == "market_context_snapshot"
+
+
+def test_market_context_uses_hot_cache_when_remote_snapshot_fails(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    app.st.session_state = SessionState()
+    data = {"context": {}, "source_status": {"warnings": []}}
+    targets = {"market_context_snapshot_url": "https://example.test/latest.json"}
+    cached = {
+        "context": {
+            "public_context_status": {"status": "fresh", "message": "cached"},
+            "rank": {"own_bsr_leaf_rank": 53},
+        },
+        "source_status": {"warnings": []},
+    }
+    app.st.session_state["market_context_snapshot_hot_cache"] = {
+        "url": "https://example.test/latest.json",
+        "data": cached,
+    }
+    monkeypatch.setattr(app, "secrets_get", lambda key, default=None: "unit-test-secret" if key == "MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY" else default)
+
+    def fail(*args, **kwargs):
+        raise TimeoutError("remote timeout")
+
+    monkeypatch.setattr(app, "load_remote_market_context_snapshot", fail)
+
+    result = app.market_context_render_data(data, targets, force_refresh=False)
+
+    assert result["context"]["rank"]["own_bsr_leaf_rank"] == 53
+    assert result["context"]["public_context_status"]["status"] == "stale"
+    assert "remote timeout" in result["context"]["public_context_status"]["message"]
 
 
 def test_offer_value_formatting_uses_yes_no_and_none(monkeypatch):

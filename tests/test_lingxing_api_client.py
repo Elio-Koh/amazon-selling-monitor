@@ -12,12 +12,12 @@ from src.lingxing_api_client import (
 
 def make_config(**overrides):
     values = {
-        "api_base_url": "http://34.143.132.97:8367",
-        "account": "Xianfa",
-        "profile_id": "3404420091097881",
+        "api_base_url": "http://203.0.113.10:8367",
+        "account": "ExampleAccount",
+        "profile_id": "0000000000000000",
         "user_token": "token-123",
-        "parent_asin": "B0FPBGR1XZ",
-        "focus_asin": "B0GXYYZPBW",
+        "parent_asin": "B0PARENT01",
+        "focus_asin": "B0TEST0001",
         "timeout": 0.5,
     }
     values.update(overrides)
@@ -28,11 +28,11 @@ def test_config_from_mapping_requires_user_token():
     with pytest.raises(LingxingAPIConfigError) as exc:
         LingxingAPIConfig.from_mapping(
             {
-                "LINGXING_API_BASE_URL": "http://34.143.132.97:8367",
-                "LINGXING_ACCOUNT": "Xianfa",
-                "LINGXING_PROFILE_ID": "3404420091097881",
-                "LINGXING_PARENT_ASIN": "B0FPBGR1XZ",
-                "ASIN": "B0GXYYZPBW",
+                "LINGXING_API_BASE_URL": "http://203.0.113.10:8367",
+                "LINGXING_ACCOUNT": "ExampleAccount",
+                "LINGXING_PROFILE_ID": "0000000000000000",
+                "LINGXING_PARENT_ASIN": "B0PARENT01",
+                "ASIN": "B0TEST0001",
             }
         )
 
@@ -50,9 +50,9 @@ def test_discover_child_asins_uses_auth_headers_and_parent_list_payload():
             "data": {
                 "list": [
                     {
-                        "parent_asin": "B0FPBGR1XZ",
+                        "parent_asin": "B0PARENT01",
                         "child_asins": [
-                            {"asin": "B0GXYYZPBW", "title": "Main child"},
+                            {"asin": "B0TEST0001", "title": "Main child"},
                             {"asin": "B0NEWCHILD", "title": "Merged child"},
                         ],
                     }
@@ -64,7 +64,7 @@ def test_discover_child_asins_uses_auth_headers_and_parent_list_payload():
 
     children = client.discover_child_asins("2026-06-13", "2026-06-13")
 
-    assert [row["asin"] for row in children] == ["B0GXYYZPBW", "B0NEWCHILD"]
+    assert [row["asin"] for row in children] == ["B0TEST0001", "B0NEWCHILD"]
     path, payload, headers, timeout = calls[0]
     assert path == "/api/lingxing/asin-all-list"
     assert payload["start_date"] == "2026-06-13"
@@ -76,8 +76,8 @@ def test_discover_child_asins_uses_auth_headers_and_parent_list_payload():
     assert payload["length"] >= 100
     assert "search_value" not in payload
     assert headers["X-USER-TOKEN"] == "token-123"
-    assert headers["X-LINGXING-ACCOUNT"] == "Xianfa"
-    assert headers["X-Profile-Id"] == "3404420091097881"
+    assert headers["X-LINGXING-ACCOUNT"] == "ExampleAccount"
+    assert headers["X-Profile-Id"] == "0000000000000000"
     assert timeout == 0.5
 
 
@@ -92,16 +92,16 @@ def test_fetch_dashboard_uses_asin_all_and_sales_fallback_without_orders_endpoin
                 "data": {
                     "list": [
                         {
-                            "parent_asin": "B0FPBGR1XZ",
+                            "parent_asin": "B0PARENT01",
                             "child_asins": [
-                                {"asin": "B0GXYYZPBW", "title": "Main child", "small_image_url": "https://img/main.jpg"},
+                                {"asin": "B0TEST0001", "title": "Main child", "small_image_url": "https://img/main.jpg"},
                                 {"asin": "B0NEWCHILD", "title": "New child"},
                             ],
                         }
                     ]
                 },
             }
-        if path == "/api/lingxing/asin-all" and payload["asin"] == "B0GXYYZPBW":
+        if path == "/api/lingxing/asin-all" and payload["asin"] == "B0TEST0001":
             assert payload["date_start"] == "2026-06-13"
             assert payload["date_end"] == "2026-06-13"
             assert "date_range" not in payload
@@ -110,8 +110,8 @@ def test_fetch_dashboard_uses_asin_all_and_sales_fallback_without_orders_endpoin
                 "data": {
                     "list": [
                         {
-                            "asin": "B0GXYYZPBW",
-                            "parent_asin": "B0FPBGR1XZ",
+                            "asin": "B0TEST0001",
+                            "parent_asin": "B0PARENT01",
                             "title": "Main child",
                             "amount": "100.50",
                             "order_items": "2",
@@ -152,7 +152,7 @@ def test_fetch_dashboard_uses_asin_all_and_sales_fallback_without_orders_endpoin
                         },
                         {
                             "campaign_id": "c1",
-                            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+                            "campaign_name": "SC_B0TEST0001_MF04_Auto_260606",
                             "targeting_type": "auto",
                             "spends": "9.00",
                             "sales": "20.00",
@@ -174,12 +174,12 @@ def test_fetch_dashboard_uses_asin_all_and_sales_fallback_without_orders_endpoin
         known_non_sp_campaign_ids=[],
     )
 
-    assert dashboard["parent_asin"] == "B0FPBGR1XZ"
-    assert dashboard["selected_child_asin"] == "B0GXYYZPBW"
+    assert dashboard["parent_asin"] == "B0PARENT01"
+    assert dashboard["selected_child_asin"] == "B0TEST0001"
     assert dashboard["sales"]["total_sales"] == 100.5
     assert dashboard["sales"]["total_orders"] == 2
     assert dashboard["sales"]["total_units"] == 8
-    assert [row["asin"] for row in dashboard["variations"]] == ["B0GXYYZPBW", "B0NEWCHILD"]
+    assert [row["asin"] for row in dashboard["variations"]] == ["B0TEST0001", "B0NEWCHILD"]
     assert dashboard["variations"][1]["units"] == 5
     assert dashboard["campaigns"][0]["campaign_id"] == "c1"
     assert dashboard["advertising"]["all_ads"]["spend"] == 9.0
@@ -200,8 +200,8 @@ def test_code_one_success_response_does_not_trigger_asin_all_fallback():
                 "data": {
                     "list": [
                         {
-                            "parent_asin": "B0FPBGR1XZ",
-                            "child_asins": [{"asin": "B0GXYYZPBW"}],
+                            "parent_asin": "B0PARENT01",
+                            "child_asins": [{"asin": "B0TEST0001"}],
                         }
                     ]
                 },
@@ -216,8 +216,8 @@ def test_code_one_success_response_does_not_trigger_asin_all_fallback():
                 "data": {
                     "list": [
                         {
-                            "asin": "B0GXYYZPBW",
-                            "parent_asin": "B0FPBGR1XZ",
+                            "asin": "B0TEST0001",
+                            "parent_asin": "B0PARENT01",
                             "amount": "1306.67",
                             "order_items": "33",
                             "volume": "33",
@@ -257,7 +257,7 @@ def test_fetch_dashboard_pulls_child_details_in_parallel():
                 "data": {
                     "list": [
                         {
-                            "parent_asin": "B0FPBGR1XZ",
+                            "parent_asin": "B0PARENT01",
                             "child_asins": [{"asin": asin} for asin in child_asins],
                         }
                     ]
@@ -271,7 +271,7 @@ def test_fetch_dashboard_pulls_child_details_in_parallel():
                     "list": [
                         {
                             "asin": payload["asin"],
-                            "parent_asin": "B0FPBGR1XZ",
+                            "parent_asin": "B0PARENT01",
                             "amount": "10",
                             "order_items": "1",
                             "volume": "1",
@@ -306,8 +306,8 @@ def test_asin_all_failure_falls_back_to_asin_sales_for_child_units():
                 "data": {
                     "list": [
                         {
-                            "parent_asin": "B0FPBGR1XZ",
-                            "child_asins": [{"asin": "B0GXYYZPBW"}],
+                            "parent_asin": "B0PARENT01",
+                            "child_asins": [{"asin": "B0TEST0001"}],
                         }
                     ]
                 },
@@ -332,7 +332,7 @@ def test_asin_all_failure_falls_back_to_asin_sales_for_child_units():
 
     assert dashboard["sales"]["total_units"] == 33
     assert dashboard["variations"][0]["units"] == 33
-    assert any("asin-all failed for B0GXYYZPBW" in warning for warning in dashboard["source_status"]["warnings"])
+    assert any("asin-all failed for B0TEST0001" in warning for warning in dashboard["source_status"]["warnings"])
 
 
 def test_api_warnings_do_not_embed_full_validation_json():

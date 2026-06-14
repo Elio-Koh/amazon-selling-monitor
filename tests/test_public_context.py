@@ -11,9 +11,9 @@ class FakePangolinClient:
 
     def product_detail(self, *, asin, site, zipcode):
         products = {
-            "B0GXYYZPBW": {
-                "asin": "B0GXYYZPBW",
-                "title": "InstaWhisk Upgraded Milk Frother",
+            "B0TEST0001": {
+                "asin": "B0TEST0001",
+                "title": "SampleWhisk Upgraded Milk Frother",
                 "price": "$39.99",
                 "strikethroughPrice": "$49.99",
                 "coupon": "",
@@ -45,14 +45,14 @@ class FakePangolinClient:
         self.keyword_queries.append(keyword)
         return [
             {"asin": "B111111111", "title": "Competing Milk Frother", "price": "$29.99", "star": "4.6", "rating": "1,200", "sponsored": True},
-            {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36"},
+            {"asin": "B0TEST0001", "title": "SampleWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36"},
         ]
 
     def product_of_category(self, *, category_id, site, zipcode):
         self.product_category_queries.append(category_id)
         return [
             {"asin": "B222222222", "title": "Category Milk Frother", "price": "$24.99", "star": "4.5", "rating": "980 ratings"},
-            {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
+            {"asin": "B0TEST0001", "title": "SampleWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
         ]
 
     def best_sellers(self, *, category_keyword, site, zipcode, category_node_id=None, category_url=None):
@@ -62,7 +62,7 @@ class FakePangolinClient:
         if category_node_id == "14042381":
             return [
                 {"asin": "B333333333", "title": "Best Seller Milk Frother", "rank": "#1"},
-                {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "rank": "#53"},
+                {"asin": "B0TEST0001", "title": "SampleWhisk Upgraded Milk Frother", "rank": "#53"},
             ]
         if category_keyword == "Kitchen & Dining":
             return [
@@ -73,11 +73,11 @@ class FakePangolinClient:
                 {"asin": "B888888888", "title": "Kitchen Competitor 4", "price": "$29.99", "star": "4.1", "rating": "430 ratings"},
                 {"asin": "B999999999", "title": "Kitchen Competitor 5", "price": "$31.99", "star": "4.0", "rating": "320 ratings"},
                 {"asin": "BAAAAAAAAA", "title": "Kitchen Competitor 6", "price": "$32.99", "star": "3.9", "rating": "210 ratings"},
-                {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
+                {"asin": "B0TEST0001", "title": "SampleWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
             ]
         return [
             {"asin": "B333333333", "title": "Best Seller Milk Frother", "price": "$19.99", "star": "4.4", "rating": "3,100 ratings"},
-            {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
+            {"asin": "B0TEST0001", "title": "SampleWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
         ]
 
     def new_releases(self, *, category_keyword, site, zipcode, category_node_id=None, category_url=None):
@@ -93,12 +93,12 @@ class FakePangolinClient:
             return [
                 {"asin": "B444444444", "title": "Kitchen New Release", "price": "$34.99", "star": "4.7", "rating": "120 ratings"},
                 {"asin": "BBBBBBBBBB", "title": "Kitchen New Release 2", "price": "$36.99", "star": "4.6", "rating": "98 ratings"},
-                {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
+                {"asin": "B0TEST0001", "title": "SampleWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
             ]
         return [
             {"asin": "B444444444", "title": "New Release Frother", "price": "$34.99", "star": "4.7", "rating": "120 ratings"},
             {"asin": "CCCCCCCCCC", "title": "New Release Frother 2", "price": "$35.99", "star": "4.5", "rating": "88 ratings"},
-            {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
+            {"asin": "B0TEST0001", "title": "SampleWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
         ]
 
 
@@ -109,7 +109,7 @@ class TimeoutKeywordPangolinClient(FakePangolinClient):
             raise TimeoutError("keyword search timed out")
         return [
             {"asin": "B111111111", "title": "Competing Milk Frother", "price": "$29.99", "star": "4.6", "rating": "1,200", "sponsored": True},
-            {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36"},
+            {"asin": "B0TEST0001", "title": "SampleWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36"},
         ]
 
 
@@ -172,7 +172,7 @@ class ProductDetailFailurePangolinClient(FakePangolinClient):
 def test_normalize_public_listing_splits_discount_and_deal():
     listing = normalize_public_listing(
         {
-            "asin": "B0GXYYZPBW",
+            "asin": "B0TEST0001",
             "price": "$39.99",
             "strikethroughPrice": "$49.99",
             "coupon": "",
@@ -191,7 +191,7 @@ def test_fetch_amazon_rank_rows_from_url_counts_second_page_rank(monkeypatch):
     second_page_asins = (
         '<div data-asin="B000000051"></div>'
         '<div data-asin="B000000052"></div>'
-        '<div data-asin="B0GXYYZPBW"></div>'
+        '<div data-asin="B0TEST0001"></div>'
     )
     calls = []
 
@@ -219,7 +219,7 @@ def test_fetch_amazon_rank_rows_from_url_counts_second_page_rank(monkeypatch):
 
     rows = fetch_amazon_rank_rows_from_url(
         "https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
-        asin="B0GXYYZPBW",
+        asin="B0TEST0001",
         category_label="Milk Frothers",
         source="amazon:directBestSellersUrl",
         timeout=1,
@@ -227,14 +227,14 @@ def test_fetch_amazon_rank_rows_from_url_counts_second_page_rank(monkeypatch):
     )
 
     assert len(calls) == 2
-    assert rows[-1]["asin"] == "B0GXYYZPBW"
+    assert rows[-1]["asin"] == "B0TEST0001"
     assert rows[-1]["rank"] == 53
 
 
 def test_normalize_public_listing_reads_delivery_promise_aliases():
     listing = normalize_public_listing(
         {
-            "asin": "B0GXYYZPBW",
+            "asin": "B0TEST0001",
             "deliveryPromise": {"deliveryTime": "Mon, Jun 15", "fastestDelivery": "Sat, Jun 13"},
         },
         source="pangolin:amzProductDetail",
@@ -247,7 +247,7 @@ def test_normalize_public_listing_reads_delivery_promise_aliases():
 def test_build_public_context_selects_keywords_and_competitors():
     client = FakePangolinClient()
     context = build_public_context(
-        asin="B0GXYYZPBW",
+        asin="B0TEST0001",
         marketplace="US",
         zipcode="10041",
         core_keywords=["milk frother", "coffee frother"],
@@ -257,7 +257,7 @@ def test_build_public_context_selects_keywords_and_competitors():
         max_competitors=5,
     )
 
-    assert context["public_listing"]["asin"] == "B0GXYYZPBW"
+    assert context["public_listing"]["asin"] == "B0TEST0001"
     assert context["public_listing"]["discount_present"] is True
     assert context["public_listing"]["deal_present"] is False
     assert [row["keyword"] for row in context["core_keywords"]] == ["milk frother", "coffee frother"]
@@ -280,7 +280,7 @@ def test_build_public_context_selects_keywords_and_competitors():
     assert context["market"]["selected_competitors"][0]["asin"] == "B111111111"
     assert "operator_pinned" in context["market"]["selected_competitors"][0]["why_selected"]
     competitor_asins = {row["asin"] for row in context["market"]["selected_competitors"]}
-    assert "B0GXYYZPBW" not in competitor_asins
+    assert "B0TEST0001" not in competitor_asins
     assert "B333333333" in competitor_asins
     assert "B444444444" in competitor_asins
     category_competitor = next(row for row in context["market"]["selected_competitors"] if row["asin"] == "B333333333")
@@ -293,7 +293,7 @@ def test_build_public_context_selects_keywords_and_competitors():
 def test_build_public_context_limits_keywords_and_keeps_partial_timeout_data():
     client = TimeoutKeywordPangolinClient()
     context = build_public_context(
-        asin="B0GXYYZPBW",
+        asin="B0TEST0001",
         marketplace="US",
         zipcode="10041",
         core_keywords=["milk frother", "coffee frother", "matcha whisk", "protein mixer"],
@@ -306,7 +306,7 @@ def test_build_public_context_limits_keywords_and_keeps_partial_timeout_data():
     )
 
     assert client.keyword_queries == ["milk frother", "coffee frother", "matcha whisk"]
-    assert context["public_listing"]["asin"] == "B0GXYYZPBW"
+    assert context["public_listing"]["asin"] == "B0TEST0001"
     assert [row["keyword"] for row in context["core_keywords"]] == ["milk frother", "coffee frother", "matcha whisk"]
     failed_keyword = context["core_keywords"][1]
     assert failed_keyword["rank_status"] == "failed"
@@ -319,7 +319,7 @@ def test_build_public_context_limits_keywords_and_keeps_partial_timeout_data():
 def test_build_public_context_uses_configured_leaf_node_for_bsr_and_new_releases():
     client = FakePangolinClient()
     context = build_public_context(
-        asin="B0GXYYZPBW",
+        asin="B0TEST0001",
         marketplace="US",
         zipcode="10041",
         core_keywords=["milk frother"],
@@ -359,7 +359,7 @@ def test_build_public_context_uses_configured_leaf_node_for_bsr_and_new_releases
 def test_build_public_context_uses_product_detail_bsr_when_leaf_list_misses_own_asin():
     client = ListingBsrFallbackPangolinClient()
     context = build_public_context(
-        asin="B0GXYYZPBW",
+        asin="B0TEST0001",
         marketplace="US",
         zipcode="10041",
         core_keywords=["milk frother"],
@@ -386,17 +386,17 @@ def test_build_public_context_uses_direct_url_fallback_when_pangolin_leaf_list_m
     client = DirectUrlFallbackPangolinClient()
 
     def fake_fetcher(url, *, asin, category_label, source, timeout):
-        assert asin == "B0GXYYZPBW"
+        assert asin == "B0TEST0001"
         assert category_label == "Milk Frothers"
         assert source == "amazon:directBestSellersUrl"
         assert "14042381" in url
         return [
             {"asin": "B333333333", "rank": 52, "title": "Other Frother"},
-            {"asin": "B0GXYYZPBW", "rank": 53, "title": "InstaWhisk Upgraded Milk Frother"},
+            {"asin": "B0TEST0001", "rank": 53, "title": "SampleWhisk Upgraded Milk Frother"},
         ]
 
     context = build_public_context(
-        asin="B0GXYYZPBW",
+        asin="B0TEST0001",
         marketplace="US",
         zipcode="10041",
         core_keywords=["milk frother"],
@@ -423,17 +423,17 @@ def test_build_public_context_uses_direct_url_when_product_detail_fails():
     client = ProductDetailFailurePangolinClient()
 
     def fake_fetcher(url, *, asin, category_label, source, timeout):
-        assert asin == "B0GXYYZPBW"
+        assert asin == "B0TEST0001"
         assert category_label == "Milk Frothers"
         assert source == "amazon:directBestSellersUrl"
         assert "14042381" in url
         return [
             {"asin": "B333333333", "rank": 52, "title": "Other Frother"},
-            {"asin": "B0GXYYZPBW", "rank": 53, "title": "InstaWhisk Upgraded Milk Frother"},
+            {"asin": "B0TEST0001", "rank": 53, "title": "SampleWhisk Upgraded Milk Frother"},
         ]
 
     context = build_public_context(
-        asin="B0GXYYZPBW",
+        asin="B0TEST0001",
         marketplace="US",
         zipcode="10041",
         core_keywords=["milk frother"],

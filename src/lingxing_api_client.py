@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 from .lingxing_client import DEFAULT_ASIN, as_float, as_int, first_present, normalize_dashboard_payload
 
 
-DEFAULT_API_BASE_URL = "http://34.143.132.97:8367"
+DEFAULT_API_BASE_URL = "http://203.0.113.10:8367"
 DEFAULT_TIMEOUT = 8.0
 
 

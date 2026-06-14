@@ -1,5 +1,5 @@
 product:
-  asin: B0GXYYZPBW
+  asin: B0TEST0001
   marketplace: US
   currency: USD
   report_timezone: Asia/Shanghai
@@ -22,6 +22,11 @@ product:
   pangolin_max_keywords: 3
   pangolin_request_timeout_seconds: 8
   market_context_background_timeout_seconds: 25
+  market_context_snapshot_refresh_minutes: 10
+  market_context_snapshot_stale_minutes: 10
+  market_context_snapshot_expired_minutes: 120
+  market_context_snapshot_timeout_seconds: 5
+  market_context_history_retention_hours: 24
   pangolin_leaf_category_label: "Milk Frothers"
   pangolin_leaf_category_node_id: "14042381"
   pangolin_best_sellers_url: "https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden"

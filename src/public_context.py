@@ -198,6 +198,13 @@ def normalize_public_listing(product: Mapping[str, Any], *, source: str, zipcode
             or product.get("availability")
             or product.get("inStock")
         ),
+        "fulfillment_method": first_text(
+            product.get("fulfillment_method")
+            or product.get("fulfillmentMethod")
+            or product.get("fulfillment")
+            or product.get("shipsFrom")
+            or product.get("seller")
+        ),
         "source": source,
         "freshness": captured_at,
         "captured_at": captured_at,

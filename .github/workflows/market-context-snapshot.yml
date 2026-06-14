@@ -1,0 +1,57 @@
+name: Market Context Snapshot
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      PANGOLINFO_API_TOKEN: ${{ secrets.PANGOLINFO_API_TOKEN }}
+      MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY: ${{ secrets.MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY }}
+      MARKET_CONTEXT_ASIN: ${{ secrets.MARKET_CONTEXT_ASIN }}
+      MARKET_CONTEXT_MARKETPLACE: ${{ secrets.MARKET_CONTEXT_MARKETPLACE }}
+      MARKET_CONTEXT_LEAF_CATEGORY_LABEL: ${{ secrets.MARKET_CONTEXT_LEAF_CATEGORY_LABEL }}
+      MARKET_CONTEXT_LEAF_CATEGORY_NODE_ID: ${{ secrets.MARKET_CONTEXT_LEAF_CATEGORY_NODE_ID }}
+      MARKET_CONTEXT_BEST_SELLERS_URL: ${{ secrets.MARKET_CONTEXT_BEST_SELLERS_URL }}
+      MARKET_CONTEXT_NEW_RELEASES_URL: ${{ secrets.MARKET_CONTEXT_NEW_RELEASES_URL }}
+      MARKET_CONTEXT_CORE_KEYWORDS: ${{ secrets.MARKET_CONTEXT_CORE_KEYWORDS }}
+      MARKET_CONTEXT_PINNED_COMPETITOR_ASINS: ${{ secrets.MARKET_CONTEXT_PINNED_COMPETITOR_ASINS }}
+      MARKET_CONTEXT_EXCLUDED_COMPETITOR_ASINS: ${{ secrets.MARKET_CONTEXT_EXCLUDED_COMPETITOR_ASINS }}
+      SNAPSHOT_PATH: data/cache/market-context/latest.enc.json
+      DATA_BRANCH: market-context-data
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Generate encrypted market context snapshot
+        run: python scripts/generate_market_context_snapshot.py --encrypt --output "$SNAPSHOT_PATH"
+
+      - name: Publish encrypted snapshot to data branch
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/market-context-data
+          mkdir -p /tmp/market-context-data
+          cp "$SNAPSHOT_PATH" /tmp/market-context-data/latest.enc.json
+          cd /tmp/market-context-data
+          git init
+          git checkout -b "$DATA_BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add latest.enc.json
+          git commit -m "update market context snapshot"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force origin "$DATA_BRANCH"
