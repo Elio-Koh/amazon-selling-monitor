@@ -267,6 +267,30 @@ def _category_rank_labels(listing: Mapping[str, Any], keywords: List[str], confi
     return labels
 
 
+def _with_configured_leaf_category(
+    labels: List[Dict[str, Any]],
+    *,
+    leaf_category_label: Optional[str],
+    leaf_category_node_id: Optional[str],
+    best_sellers_url: Optional[str],
+    new_releases_url: Optional[str],
+) -> List[Dict[str, Any]]:
+    label = first_text(leaf_category_label)
+    node_id = first_text(leaf_category_node_id)
+    if not label and not node_id:
+        return [dict(row) for row in labels]
+    leaf = {
+        "label": label or str(node_id),
+        "rank_level": "leaf",
+        "category_node_id": node_id,
+        "best_sellers_url": first_text(best_sellers_url),
+        "new_releases_url": first_text(new_releases_url),
+    }
+    out = [dict(row) for row in labels if row.get("rank_level") != "leaf" and first_text(row.get("label")) != leaf["label"]]
+    out.append(leaf)
+    return out
+
+
 def _row_rank(row: Mapping[str, Any], fallback: int) -> int:
     return parse_int(row.get("rank") or row.get("bsr_rank") or row.get("position") or row.get("index")) or fallback
 
@@ -336,6 +360,8 @@ def _normalize_category_rows(
     category_label: str,
     rank_level: str,
     own_asin: str,
+    category_node_id: Optional[str] = None,
+    category_url: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
     normalized_rows: List[Dict[str, Any]] = []
     competitor_rows: List[Dict[str, Any]] = []
@@ -366,6 +392,8 @@ def _normalize_category_rows(
             "bsr_rank": rank if source == "pangolin:amzBestSellers" else None,
             "category_list_rank": rank,
             "category_label": category_label,
+            "category_node_id": category_node_id,
+            "category_url": category_url,
             "rank_level": rank_level,
             "category_candidate_source": source,
             "ad_visibility": "category_list",
@@ -402,21 +430,40 @@ def _normalize_category_rows(
                 )
         else:
             competitor_rows.append(normalized)
+    if own_found:
+        capture_status = "measured"
+    elif source == "pangolin:amzNewReleases" and rank_level == "leaf":
+        capture_status = "not_in_leaf_new_release_window"
+    elif source == "pangolin:amzBestSellers" and rank_level == "leaf":
+        capture_status = "not_in_leaf_bsr_window"
+    else:
+        capture_status = "not_in_bsr_window"
     attempt = {
         "source": source,
         "category": category_label,
+        "category_node_id": category_node_id,
+        "category_url": category_url,
         "rank_level": rank_level,
-        "bsr_capture_status": "measured" if own_found else "not_in_bsr_window",
+        "bsr_capture_status": capture_status,
         "bsr_result_count": len(normalized_rows),
         "bsr_window_size": len(rows),
     }
     return normalized_rows, own_rank, [attempt]
 
 
-def _bsr_capture_failed(*, source: str, category_label: Optional[str], error: Exception) -> Dict[str, Any]:
+def _bsr_capture_failed(
+    *,
+    source: str,
+    category_label: Optional[str],
+    error: Exception,
+    category_node_id: Optional[str] = None,
+    category_url: Optional[str] = None,
+) -> Dict[str, Any]:
     return {
         "source": source,
         "category": category_label,
+        "category_node_id": category_node_id,
+        "category_url": category_url,
         "bsr_capture_status": "bsr_capture_failed",
         "bsr_result_count": 0,
         "bsr_window_size": 0,
@@ -648,6 +695,10 @@ def build_public_context(
     include_best_sellers: bool = True,
     include_new_releases: bool = True,
     max_keywords: int = 3,
+    leaf_category_label: Optional[str] = None,
+    leaf_category_node_id: Optional[str] = None,
+    best_sellers_url: Optional[str] = None,
+    new_releases_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     site = SITE_BY_MARKETPLACE.get(marketplace, f"amz_{marketplace.lower()}")
     own_asin = asin.upper()
@@ -673,47 +724,86 @@ def build_public_context(
         rank_rows.append(rank)
         competitor_rows.extend(competitors)
 
-    category_labels = _category_rank_labels(listing, keywords, category_keyword)
+    category_labels = _with_configured_leaf_category(
+        _category_rank_labels(listing, keywords, category_keyword),
+        leaf_category_label=leaf_category_label,
+        leaf_category_node_id=leaf_category_node_id,
+        best_sellers_url=best_sellers_url,
+        new_releases_url=new_releases_url,
+    )
     category_label = category_labels[-1]["label"] if category_labels else _category_keyword(listing, keywords, category_keyword)
-    category_sources: List[Tuple[str, str, str, Any]] = []
+    category_sources: List[Dict[str, Any]] = []
     if category_rankings_enabled:
-        if include_product_of_category and listing.get("category_id"):
+        product_category_id = first_text(leaf_category_node_id) or first_text(listing.get("category_id"))
+        if include_product_of_category and product_category_id:
             product_category = category_labels[-1] if category_labels else {"label": str(category_label or listing.get("category_id") or "category"), "rank_level": "configured"}
             category_sources.append(
-                (
-                    "pangolin:amzProductOfCategory",
-                    str(product_category["label"]),
-                    str(product_category["rank_level"]),
-                    lambda: pangolin.product_of_category(category_id=str(listing["category_id"]), site=site, zipcode=zipcode),
-                )
+                {
+                    "source": "pangolin:amzProductOfCategory",
+                    "category_label": str(product_category["label"]),
+                    "rank_level": str(product_category["rank_level"]),
+                    "category_node_id": product_category_id,
+                    "category_url": None,
+                    "fetch": lambda category_id=product_category_id: pangolin.product_of_category(category_id=str(category_id), site=site, zipcode=zipcode),
+                }
             )
         if include_best_sellers:
             for category in category_labels:
                 label = str(category["label"])
                 category_sources.append(
-                    (
-                        "pangolin:amzBestSellers",
-                        label,
-                        str(category["rank_level"]),
-                        lambda label=label: pangolin.best_sellers(category_keyword=label, site=site, zipcode=zipcode),
-                    )
+                    {
+                        "source": "pangolin:amzBestSellers",
+                        "category_label": label,
+                        "rank_level": str(category["rank_level"]),
+                        "category_node_id": first_text(category.get("category_node_id")),
+                        "category_url": first_text(category.get("best_sellers_url")),
+                        "fetch": lambda category=category, label=label: pangolin.best_sellers(
+                            category_keyword=label,
+                            site=site,
+                            zipcode=zipcode,
+                            category_node_id=first_text(category.get("category_node_id")) or "",
+                            category_url=first_text(category.get("best_sellers_url")) or "",
+                        ),
+                    }
                 )
         if include_new_releases:
             for category in category_labels:
                 label = str(category["label"])
                 category_sources.append(
-                    (
-                        "pangolin:amzNewReleases",
-                        label,
-                        str(category["rank_level"]),
-                        lambda label=label: pangolin.new_releases(category_keyword=label, site=site, zipcode=zipcode),
-                    )
+                    {
+                        "source": "pangolin:amzNewReleases",
+                        "category_label": label,
+                        "rank_level": str(category["rank_level"]),
+                        "category_node_id": first_text(category.get("category_node_id")),
+                        "category_url": first_text(category.get("new_releases_url")),
+                        "fetch": lambda category=category, label=label: pangolin.new_releases(
+                            category_keyword=label,
+                            site=site,
+                            zipcode=zipcode,
+                            category_node_id=first_text(category.get("category_node_id")) or "",
+                            category_url=first_text(category.get("new_releases_url")) or "",
+                        ),
+                    }
                 )
-    for source, source_category_label, rank_level, fetch_rows in category_sources:
+    for category_source in category_sources:
+        source = str(category_source["source"])
+        source_category_label = str(category_source["category_label"])
+        rank_level = str(category_source["rank_level"])
+        category_node_id = first_text(category_source.get("category_node_id"))
+        category_url = first_text(category_source.get("category_url"))
+        fetch_rows = category_source["fetch"]
         try:
             rows = fetch_rows()
         except Exception as exc:
-            bsr_capture_attempts.append(_bsr_capture_failed(source=source, category_label=source_category_label, error=exc))
+            bsr_capture_attempts.append(
+                _bsr_capture_failed(
+                    source=source,
+                    category_label=source_category_label,
+                    error=exc,
+                    category_node_id=category_node_id,
+                    category_url=category_url,
+                )
+            )
             context_failures.append(f"{source} failed for {source_category_label}: {_short_error(exc)}")
             continue
         normalized, own_rank, attempts = _normalize_category_rows(
@@ -722,6 +812,8 @@ def build_public_context(
             category_label=source_category_label,
             rank_level=rank_level,
             own_asin=own_asin,
+            category_node_id=category_node_id,
+            category_url=category_url,
         )
         category_candidates.extend(normalized)
         competitor_rows.extend([row for row in normalized if row.get("competitor_asin") != own_asin])

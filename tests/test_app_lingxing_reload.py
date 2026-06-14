@@ -7,6 +7,7 @@ class FakeStreamlit(types.ModuleType):
     def __init__(self):
         super().__init__("streamlit")
         self.secrets = {}
+        self.session_state = SessionState()
 
     def set_page_config(self, **kwargs):
         return None
@@ -23,6 +24,17 @@ class FakeStreamlit(types.ModuleType):
             return None
 
         return noop
+
+
+class SessionState(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name, value):
+        self[name] = value
 
 
 class OldLingxingClient:
@@ -162,10 +174,12 @@ def test_own_ranking_values_use_major_and_leaf_rows(monkeypatch):
             "own_bsr_major_category": "Kitchen & Dining",
             "own_bsr_leaf_rank": 2,
             "own_bsr_leaf_category": "Milk Frothers",
+            "own_bsr_leaf_source": "pangolin:amzBestSellers",
             "own_new_release_major_rank": 3,
             "own_new_release_major_category": "Kitchen & Dining",
             "own_new_release_leaf_rank": 3,
             "own_new_release_leaf_category": "Milk Frothers",
+            "own_new_release_leaf_source": "pangolin:amzNewReleases",
             "bsr_capture_status": "measured",
         }
     )
@@ -175,10 +189,12 @@ def test_own_ranking_values_use_major_and_leaf_rows(monkeypatch):
         "BSR Major Category": "Kitchen & Dining",
         "BSR Leaf Category Rank": "2",
         "BSR Leaf Category": "Milk Frothers",
+        "BSR Leaf Source": "pangolin:amzBestSellers",
         "New Release Major Category Rank": "3",
         "New Release Major Category": "Kitchen & Dining",
         "New Release Leaf Category Rank": "3",
         "New Release Leaf Category": "Milk Frothers",
+        "New Release Leaf Source": "pangolin:amzNewReleases",
         "BSR Capture Status": "measured",
     }
     assert "Best Seller Rank" not in values
@@ -303,6 +319,76 @@ def test_load_market_context_downgrades_unexpected_timeout(monkeypatch):
     assert "TimeoutError" in status["message"]
     assert result["context"]["core_keywords"][0]["rank_status"] == "not_checked"
     assert "Market context failed" in result["source_status"]["warnings"][0]
+
+
+def test_market_context_starts_background_fetch_without_blocking(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    app.st.session_state = SessionState()
+    data = {
+        "asin": "B0GXYYZPBW",
+        "pulled_at": "2026-06-14T00:00:00Z",
+        "date_window": {"start_date": "2026-06-13", "end_date": "2026-06-13"},
+        "context": {"listing": {"title": "Sample milk frother"}},
+        "source_status": {"warnings": []},
+    }
+    targets = {"asin": "B0GXYYZPBW", "marketplace": "US", "core_keywords": ["milk frother"]}
+    submitted = []
+
+    class PendingFuture:
+        def done(self):
+            return False
+
+    monkeypatch.setattr(app, "secrets_get", lambda key, default=None: "token-123" if key == "PANGOLINFO_API_TOKEN" else default)
+    monkeypatch.setattr(app, "_submit_market_context_job", lambda data, targets, token: submitted.append((data, targets, token)) or PendingFuture())
+    monkeypatch.setattr(
+        app,
+        "enrich_public_context_with_token",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Market context should not load synchronously")),
+    )
+
+    result = app.market_context_render_data(data, targets, force_refresh=False)
+
+    assert submitted and submitted[0][2] == "token-123"
+    assert result["context"]["public_context_status"]["status"] == "loading"
+    assert "background" in result["context"]["public_context_status"]["message"].lower()
+
+
+def test_market_context_uses_completed_background_result(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    app.st.session_state = SessionState()
+    data = {
+        "asin": "B0GXYYZPBW",
+        "pulled_at": "2026-06-14T00:00:00Z",
+        "date_window": {"start_date": "2026-06-13", "end_date": "2026-06-13"},
+        "context": {"listing": {"title": "Sample milk frother"}},
+        "source_status": {"warnings": []},
+    }
+    enriched = {
+        **data,
+        "context": {
+            "public_context_status": {
+                "status": "ok",
+                "message": "Pangolin public context loaded.",
+                "source": "pangolin",
+                "freshness": "2026-06-14T00:01:00Z",
+            }
+        },
+    }
+
+    class DoneFuture:
+        def done(self):
+            return True
+
+        def result(self):
+            return enriched
+
+    key = app.market_context_request_key(data, {"asin": "B0GXYYZPBW"}, 0)
+    app.st.session_state["market_context_future"] = {"key": key, "future": DoneFuture()}
+
+    result = app.market_context_render_data(data, {"asin": "B0GXYYZPBW"}, force_refresh=False)
+
+    assert result is enriched
+    assert app.st.session_state["market_context_result"]["data"] is enriched
 
 
 def test_offer_value_formatting_uses_yes_no_and_none(monkeypatch):

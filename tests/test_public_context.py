@@ -6,6 +6,7 @@ class FakePangolinClient:
         self.best_seller_queries = []
         self.new_release_queries = []
         self.keyword_queries = []
+        self.product_category_queries = []
 
     def product_detail(self, *, asin, site, zipcode):
         products = {
@@ -47,13 +48,21 @@ class FakePangolinClient:
         ]
 
     def product_of_category(self, *, category_id, site, zipcode):
+        self.product_category_queries.append(category_id)
         return [
             {"asin": "B222222222", "title": "Category Milk Frother", "price": "$24.99", "star": "4.5", "rating": "980 ratings"},
             {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
         ]
 
-    def best_sellers(self, *, category_keyword, site, zipcode):
-        self.best_seller_queries.append(category_keyword)
+    def best_sellers(self, *, category_keyword, site, zipcode, category_node_id=None, category_url=None):
+        self.best_seller_queries.append(
+            {"keyword": category_keyword, "node_id": category_node_id, "url": category_url}
+        )
+        if category_node_id == "14042381":
+            return [
+                {"asin": "B333333333", "title": "Best Seller Milk Frother", "rank": "#1"},
+                {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "rank": "#53"},
+            ]
         if category_keyword == "Kitchen & Dining":
             return [
                 {"asin": "B333333333", "title": "Kitchen Best Seller", "price": "$19.99", "star": "4.4", "rating": "3,100 ratings"},
@@ -70,8 +79,15 @@ class FakePangolinClient:
             {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
         ]
 
-    def new_releases(self, *, category_keyword, site, zipcode):
-        self.new_release_queries.append(category_keyword)
+    def new_releases(self, *, category_keyword, site, zipcode, category_node_id=None, category_url=None):
+        self.new_release_queries.append(
+            {"keyword": category_keyword, "node_id": category_node_id, "url": category_url}
+        )
+        if category_node_id == "14042381":
+            return [
+                {"asin": "B444444444", "title": "New Release Frother", "rank": "#1"},
+                {"asin": "CCCCCCCCCC", "title": "New Release Frother 2", "rank": "#2"},
+            ]
         if category_keyword == "Kitchen & Dining":
             return [
                 {"asin": "B444444444", "title": "Kitchen New Release", "price": "$34.99", "star": "4.7", "rating": "120 ratings"},
@@ -145,8 +161,8 @@ def test_build_public_context_selects_keywords_and_competitors():
     assert [row["keyword"] for row in context["core_keywords"]] == ["milk frother", "coffee frother"]
     assert context["rank"]["core_keyword_ranks"][0]["own_organic_rank"] == 1
     assert context["rank"]["bsr_capture_status"] == "measured"
-    assert client.best_seller_queries == ["Kitchen & Dining", "Milk Frothers"]
-    assert client.new_release_queries == ["Kitchen & Dining", "Milk Frothers"]
+    assert [row["keyword"] for row in client.best_seller_queries] == ["Kitchen & Dining", "Milk Frothers"]
+    assert [row["keyword"] for row in client.new_release_queries] == ["Kitchen & Dining", "Milk Frothers"]
     assert context["rank"]["own_bsr_major_rank"] == 8
     assert context["rank"]["own_bsr_major_category"] == "Kitchen & Dining"
     assert context["rank"]["own_bsr_leaf_rank"] == 2
@@ -196,3 +212,43 @@ def test_build_public_context_limits_keywords_and_keeps_partial_timeout_data():
     assert context["public_context_status"]["status"] == "partial"
     assert "coffee frother" in context["public_context_status"]["message"]
     assert context["rank"]["core_keyword_ranks"][0]["rank_status"] == "measured"
+
+
+def test_build_public_context_uses_configured_leaf_node_for_bsr_and_new_releases():
+    client = FakePangolinClient()
+    context = build_public_context(
+        asin="B0GXYYZPBW",
+        marketplace="US",
+        zipcode="10041",
+        core_keywords=["milk frother"],
+        pinned_competitor_asins=[],
+        excluded_competitor_asins=[],
+        client=client,
+        max_competitors=5,
+        max_keywords=1,
+        leaf_category_label="Milk Frothers",
+        leaf_category_node_id="14042381",
+        best_sellers_url="https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
+        new_releases_url="https://www.amazon.com/gp/new-releases/home-garden/14042381",
+    )
+
+    assert client.product_category_queries[-1] == "14042381"
+    assert client.best_seller_queries[-1] == {
+        "keyword": "Milk Frothers",
+        "node_id": "14042381",
+        "url": "https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
+    }
+    assert client.new_release_queries[-1] == {
+        "keyword": "Milk Frothers",
+        "node_id": "14042381",
+        "url": "https://www.amazon.com/gp/new-releases/home-garden/14042381",
+    }
+    assert context["rank"]["own_bsr_leaf_rank"] == 53
+    assert context["rank"]["own_bsr_leaf_category"] == "Milk Frothers"
+    assert context["rank"]["own_bsr_leaf_source"] == "pangolin:amzBestSellers"
+    leaf_new_release_attempt = next(
+        row
+        for row in context["rank"]["bsr_capture_attempts"]
+        if row["source"] == "pangolin:amzNewReleases" and row["category_node_id"] == "14042381"
+    )
+    assert leaf_new_release_attempt["bsr_capture_status"] == "not_in_leaf_new_release_window"

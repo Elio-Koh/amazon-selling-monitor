@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import concurrent.futures
 import html
 import importlib
 import inspect
@@ -10,7 +11,7 @@ import json
 import os
 import re
 from datetime import date
-from typing import Any, Dict, Iterable, Mapping
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 import streamlit as st
 
@@ -21,6 +22,9 @@ from src.config import load_targets
 from src.date_windows import PRESETS, DateWindow, resolve_date_window, today_for_timezone
 from src.pangolin_client import PangolinClient, PangolinError
 from src.public_context import build_public_context
+
+
+MARKET_CONTEXT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="market-context")
 
 
 st.set_page_config(
@@ -210,8 +214,16 @@ def build_summary_with_reload(
 
 
 def enrich_public_context(data: Dict[str, Any], targets: Mapping[str, Any]) -> Dict[str, Any]:
-    enabled = bool(targets.get("pangolin_enabled", True))
     token = secrets_get("PANGOLINFO_API_TOKEN") or secrets_get("PANGOLIN_API_TOKEN")
+    return enrich_public_context_with_token(data, targets, str(token) if token else None)
+
+
+def enrich_public_context_with_token(
+    data: Dict[str, Any],
+    targets: Mapping[str, Any],
+    token: Optional[str],
+) -> Dict[str, Any]:
+    enabled = bool(targets.get("pangolin_enabled", True))
     context = data.setdefault("context", {})
     warnings = data.setdefault("source_status", {}).setdefault("warnings", [])
     core_keywords = [str(item) for item in targets.get("core_keywords", []) or [] if str(item).strip()]
@@ -244,6 +256,10 @@ def enrich_public_context(data: Dict[str, Any], targets: Mapping[str, Any]) -> D
             include_product_of_category=bool(targets.get("pangolin_include_product_of_category", True)),
             include_best_sellers=bool(targets.get("pangolin_include_best_sellers", True)),
             include_new_releases=bool(targets.get("pangolin_include_new_releases", True)),
+            leaf_category_label=safe_text(targets.get("pangolin_leaf_category_label"), ""),
+            leaf_category_node_id=safe_text(targets.get("pangolin_leaf_category_node_id"), ""),
+            best_sellers_url=safe_text(targets.get("pangolin_best_sellers_url"), ""),
+            new_releases_url=safe_text(targets.get("pangolin_new_releases_url"), ""),
             client=PangolinClient(api_token=str(token)),
         )
     except (PangolinError, RuntimeError, ValueError, TimeoutError, OSError) as exc:
@@ -443,6 +459,101 @@ def load_market_context(
         _set_public_context_status(context, "failed", f"{type(exc).__name__}: {exc}", core_keywords)
         warnings.append(f"Market context failed: {type(exc).__name__}: {exc}")
         return fallback
+
+
+def market_context_request_key(data: Mapping[str, Any], targets: Mapping[str, Any], refresh_counter: int) -> str:
+    payload = {
+        "refresh_counter": refresh_counter,
+        "asin": data.get("asin") or targets.get("asin"),
+        "pulled_at": data.get("pulled_at"),
+        "date_window": data.get("date_window"),
+        "pangolin": {
+            "zipcode": targets.get("pangolin_zipcode"),
+            "max_keywords": targets.get("pangolin_max_keywords"),
+            "leaf_label": targets.get("pangolin_leaf_category_label"),
+            "leaf_node_id": targets.get("pangolin_leaf_category_node_id"),
+            "best_sellers_url": targets.get("pangolin_best_sellers_url"),
+            "new_releases_url": targets.get("pangolin_new_releases_url"),
+            "core_keywords": targets.get("core_keywords"),
+        },
+    }
+    return json.dumps(payload, sort_keys=True, default=str)
+
+
+def _market_context_preview(data: Dict[str, Any], status: str, message: str, targets: Mapping[str, Any]) -> Dict[str, Any]:
+    preview = copy.deepcopy(data)
+    context = preview.setdefault("context", {})
+    core_keywords = [str(item) for item in targets.get("core_keywords", []) or [] if str(item).strip()]
+    if not core_keywords:
+        listing = context.get("listing") if isinstance(context.get("listing"), Mapping) else {}
+        core_keywords = _keywords_from_title(str(listing.get("title") or ""), limit=target_int(targets, "pangolin_max_keywords", 3))
+    _set_public_context_status(context, status, message, core_keywords)
+    return preview
+
+
+def _submit_market_context_job(data: Dict[str, Any], targets: Mapping[str, Any], token: str) -> concurrent.futures.Future:
+    return MARKET_CONTEXT_EXECUTOR.submit(
+        enrich_public_context_with_token,
+        copy.deepcopy(data),
+        dict(targets),
+        token,
+    )
+
+
+def market_context_render_data(data: Dict[str, Any], targets: Mapping[str, Any], *, force_refresh: bool) -> Dict[str, Any]:
+    if "market_context_counter" not in st.session_state:
+        st.session_state["market_context_counter"] = 0
+    if force_refresh:
+        st.session_state["market_context_counter"] = int(st.session_state.get("market_context_counter", 0)) + 1
+        st.session_state.pop("market_context_future", None)
+        st.session_state.pop("market_context_result", None)
+
+    counter = int(st.session_state.get("market_context_counter", 0))
+    key = market_context_request_key(data, targets, counter)
+    result_record = st.session_state.get("market_context_result")
+    if isinstance(result_record, Mapping) and result_record.get("key") == key:
+        return result_record["data"]
+
+    future_record = st.session_state.get("market_context_future")
+    future = future_record.get("future") if isinstance(future_record, Mapping) and future_record.get("key") == key else None
+    if future is None:
+        token = secrets_get("PANGOLINFO_API_TOKEN") or secrets_get("PANGOLIN_API_TOKEN")
+        if not token:
+            result = enrich_public_context_with_token(copy.deepcopy(data), targets, None)
+            st.session_state["market_context_result"] = {"key": key, "data": result}
+            return result
+        future = _submit_market_context_job(data, targets, str(token))
+        st.session_state["market_context_future"] = {"key": key, "future": future}
+
+    if future.done():
+        try:
+            result = future.result()
+        except Exception as exc:
+            result = _market_context_preview(data, "failed", f"{type(exc).__name__}: {exc}", targets)
+            result.setdefault("source_status", {}).setdefault("warnings", []).append(
+                f"Market context failed: {type(exc).__name__}: {exc}"
+            )
+        st.session_state["market_context_result"] = {"key": key, "data": result}
+        st.session_state.pop("market_context_future", None)
+        return result
+
+    return _market_context_preview(
+        data,
+        "loading",
+        "Market context is loading in background. Core sales and ads data are already available.",
+        targets,
+    )
+
+
+def _streamlit_fragment(run_every: str):
+    fragment = getattr(st, "__dict__", {}).get("fragment") or getattr(st, "__dict__", {}).get("experimental_fragment")
+    if callable(fragment):
+        return fragment(run_every=run_every)
+
+    def decorator(func):
+        return func
+
+    return decorator
 
 
 def inject_css() -> None:
@@ -805,42 +916,27 @@ def render_all_ads(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
     st.dataframe(_campaign_table(data["campaigns"]), use_container_width=True, hide_index=True)
 
 
+@_streamlit_fragment(run_every="2s")
 def render_market_context_tab(
     data: Dict[str, Any],
     summary: Dict[str, Any],
     currency: str,
     targets: Mapping[str, Any],
 ) -> None:
-    if "market_context_counter" not in st.session_state:
-        st.session_state.market_context_counter = 0
     cols = st.columns([1, 3])
-    if cols[0].button("Refresh Market Context", use_container_width=True):
-        st.session_state.market_context_counter += 1
-        load_market_context.clear()
-        st.session_state.market_context_loaded = True
-    should_load = bool(st.session_state.get("market_context_loaded"))
-    if should_load:
-        with st.spinner("Pulling market context..."):
-            context_data = load_market_context(
-                st.session_state.market_context_counter,
-                data,
-                dict(targets),
-            )
-        render_context(context_data, summary, currency)
-        return
-
-    cols[1].info("Market context is skipped on initial load. Refresh it here when you need Pangolin listing, rank, or competitor context.")
-    preview = copy.deepcopy(data)
-    preview.setdefault("context", {}).setdefault(
-        "public_context_status",
-        {
-            "status": "skipped",
-            "message": "Market context has not been refreshed in this session.",
-            "source": "pangolin",
-            "freshness": None,
-        },
-    )
-    render_context(preview, summary, currency)
+    force_refresh = cols[0].button("Refresh Market Context", use_container_width=True)
+    context_data = market_context_render_data(data, dict(targets), force_refresh=force_refresh)
+    public_status = context_data.get("context", {}).get("public_context_status", {})
+    status = public_status.get("status") if isinstance(public_status, Mapping) else None
+    if status == "loading":
+        cols[1].info(public_status.get("message") or "Market context is loading in background.")
+    elif status == "ok":
+        cols[1].success("Market context is ready.")
+    elif status == "partial":
+        cols[1].warning(public_status.get("message") or "Market context loaded with partial data.")
+    elif status in {"failed", "missing_token"}:
+        cols[1].error(public_status.get("message") or "Market context is unavailable.")
+    render_context(context_data, summary, currency)
 
 
 def _campaign_table(campaigns: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1002,10 +1098,12 @@ def own_ranking_values(rank: Mapping[str, Any]) -> Dict[str, Any]:
         "BSR Major Category": safe_text(rank.get("own_bsr_major_category")),
         "BSR Leaf Category Rank": safe_text(rank.get("own_bsr_leaf_rank")),
         "BSR Leaf Category": safe_text(rank.get("own_bsr_leaf_category")),
+        "BSR Leaf Source": safe_text(rank.get("own_bsr_leaf_source")),
         "New Release Major Category Rank": safe_text(rank.get("own_new_release_major_rank")),
         "New Release Major Category": safe_text(rank.get("own_new_release_major_category")),
         "New Release Leaf Category Rank": safe_text(rank.get("own_new_release_leaf_rank")),
         "New Release Leaf Category": safe_text(rank.get("own_new_release_leaf_category")),
+        "New Release Leaf Source": safe_text(rank.get("own_new_release_leaf_source")),
         "BSR Capture Status": safe_text(rank.get("bsr_capture_status")),
     }
 

@@ -117,11 +117,11 @@ class PangolinClient:
             raise PangolinError(f"Pangolinfo API error code={code}: {parsed.get('message', '')}")
         return parsed
 
-    def scrape(self, *, parser_name: str, site: str, content: str, zipcode: str) -> Dict[str, Any]:
+    def scrape(self, *, parser_name: str, site: str, content: str, zipcode: str, url: str = "") -> Dict[str, Any]:
         return self._post(
             "/api/v1/scrape",
             {
-                "url": "",
+                "url": url,
                 "parserName": parser_name,
                 "site": site,
                 "content": content,
@@ -140,8 +140,40 @@ class PangolinClient:
     def product_of_category(self, *, category_id: str, site: str, zipcode: str) -> List[Dict[str, Any]]:
         return extract_results(self.scrape(parser_name="amzProductOfCategory", site=site, content=category_id, zipcode=zipcode))
 
-    def best_sellers(self, *, category_keyword: str, site: str, zipcode: str) -> List[Dict[str, Any]]:
-        return extract_results(self.scrape(parser_name="amzBestSellers", site=site, content=category_keyword, zipcode=zipcode))
+    def best_sellers(
+        self,
+        *,
+        category_keyword: str,
+        site: str,
+        zipcode: str,
+        category_node_id: str = "",
+        category_url: str = "",
+    ) -> List[Dict[str, Any]]:
+        return extract_results(
+            self.scrape(
+                parser_name="amzBestSellers",
+                site=site,
+                content=category_node_id or category_keyword,
+                zipcode=zipcode,
+                url=category_url,
+            )
+        )
 
-    def new_releases(self, *, category_keyword: str, site: str, zipcode: str) -> List[Dict[str, Any]]:
-        return extract_results(self.scrape(parser_name="amzNewReleases", site=site, content=category_keyword, zipcode=zipcode))
+    def new_releases(
+        self,
+        *,
+        category_keyword: str,
+        site: str,
+        zipcode: str,
+        category_node_id: str = "",
+        category_url: str = "",
+    ) -> List[Dict[str, Any]]:
+        return extract_results(
+            self.scrape(
+                parser_name="amzNewReleases",
+                site=site,
+                content=category_node_id or category_keyword,
+                zipcode=zipcode,
+                url=category_url,
+            )
+        )
