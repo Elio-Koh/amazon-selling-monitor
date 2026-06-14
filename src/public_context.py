@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 from .pangolin_client import PangolinClient
 
@@ -295,6 +297,73 @@ def _row_rank(row: Mapping[str, Any], fallback: int) -> int:
     return parse_int(row.get("rank") or row.get("bsr_rank") or row.get("position") or row.get("index")) or fallback
 
 
+def _url_with_page(url: str, page: int) -> str:
+    if page <= 1:
+        return url
+    parsed = urllib.parse.urlparse(url)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query = [(key, value) for key, value in query if key.lower() != "pg"]
+    query.append(("pg", str(page)))
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
+def fetch_amazon_rank_rows_from_url(
+    url: str,
+    *,
+    asin: str,
+    category_label: str,
+    source: str,
+    timeout: int = 8,
+    max_pages: int = 2,
+) -> List[Dict[str, Any]]:
+    """Best-effort fallback for configured Amazon ranking URLs.
+
+    Pangolin remains the primary source. This only extracts ASIN order from the
+    public Best Sellers/New Releases HTML when Pangolin cannot locate the leaf
+    node rank.
+    """
+    rows: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    base_timeout = max(int(timeout or 1), 1)
+    page_limit = max(int(max_pages or 1), 1)
+    target_asin = asin.upper().strip()
+    for page in range(1, page_limit + 1):
+        page_url = _url_with_page(url, page)
+        request = urllib.request.Request(
+            page_url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=base_timeout) as response:
+            html = response.read().decode("utf-8", errors="ignore")
+        asin_matches = re.findall(r'data-asin=["\']([A-Z0-9]{10})["\']', html)
+        if not asin_matches:
+            asin_matches = re.findall(r"/(?:dp|gp/product)/([A-Z0-9]{10})(?:[/?\"'&]|$)", html)
+        for found_asin in asin_matches:
+            normalized_asin = found_asin.upper()
+            if normalized_asin in seen:
+                continue
+            seen.add(normalized_asin)
+            rows.append(
+                {
+                    "asin": normalized_asin,
+                    "rank": len(rows) + 1,
+                    "title": None,
+                    "category": category_label,
+                    "source": source,
+                }
+            )
+            if normalized_asin == target_asin:
+                return rows
+    return rows
+
+
 def _set_own_category_rank(
     own_rank: Dict[str, Any],
     *,
@@ -389,7 +458,7 @@ def _normalize_category_rows(
                 or row.get("availability")
                 or row.get("inStock")
             ),
-            "bsr_rank": rank if source == "pangolin:amzBestSellers" else None,
+            "bsr_rank": rank if source in {"pangolin:amzBestSellers", "amazon:directBestSellersUrl"} else None,
             "category_list_rank": rank,
             "category_label": category_label,
             "category_node_id": category_node_id,
@@ -402,7 +471,7 @@ def _normalize_category_rows(
         normalized_rows.append(normalized)
         if asin == own_asin:
             own_found = True
-            if source == "pangolin:amzBestSellers":
+            if source in {"pangolin:amzBestSellers", "amazon:directBestSellersUrl"}:
                 _set_own_category_rank(
                     own_rank,
                     metric="bsr",
@@ -411,7 +480,7 @@ def _normalize_category_rows(
                     category_label=category_label,
                     source=source,
                 )
-            elif source == "pangolin:amzNewReleases":
+            elif source in {"pangolin:amzNewReleases", "amazon:directNewReleasesUrl"}:
                 _set_own_category_rank(
                     own_rank,
                     metric="new_release",
@@ -432,9 +501,9 @@ def _normalize_category_rows(
             competitor_rows.append(normalized)
     if own_found:
         capture_status = "measured"
-    elif source == "pangolin:amzNewReleases" and rank_level == "leaf":
+    elif source in {"pangolin:amzNewReleases", "amazon:directNewReleasesUrl"} and rank_level == "leaf":
         capture_status = "not_in_leaf_new_release_window"
-    elif source == "pangolin:amzBestSellers" and rank_level == "leaf":
+    elif source in {"pangolin:amzBestSellers", "amazon:directBestSellersUrl"} and rank_level == "leaf":
         capture_status = "not_in_leaf_bsr_window"
     else:
         capture_status = "not_in_bsr_window"
@@ -699,6 +768,9 @@ def build_public_context(
     leaf_category_node_id: Optional[str] = None,
     best_sellers_url: Optional[str] = None,
     new_releases_url: Optional[str] = None,
+    direct_url_fallback_enabled: bool = True,
+    direct_url_timeout: int = 8,
+    direct_url_fetcher: Optional[Callable[..., List[Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
     site = SITE_BY_MARKETPLACE.get(marketplace, f"amz_{marketplace.lower()}")
     own_asin = asin.upper()
@@ -732,6 +804,21 @@ def build_public_context(
         new_releases_url=new_releases_url,
     )
     category_label = category_labels[-1]["label"] if category_labels else _category_keyword(listing, keywords, category_keyword)
+    product_detail_bsr_recorded = False
+    if own_category_rank.get("own_bsr_leaf_rank") is not None:
+        bsr_capture_attempts.append(
+            {
+                "source": "pangolin:amzProductDetail",
+                "category": own_category_rank.get("own_bsr_leaf_category") or category_label,
+                "category_node_id": first_text(leaf_category_node_id),
+                "category_url": first_text(best_sellers_url),
+                "rank_level": "leaf",
+                "bsr_capture_status": "measured",
+                "bsr_result_count": 1,
+                "bsr_window_size": 1,
+            }
+        )
+        product_detail_bsr_recorded = True
     category_sources: List[Dict[str, Any]] = []
     if category_rankings_enabled:
         product_category_id = first_text(leaf_category_node_id) or first_text(listing.get("category_id"))
@@ -820,6 +907,86 @@ def build_public_context(
         bsr_capture_attempts.extend(attempts)
         own_category_rank.update({key: value for key, value in own_rank.items() if value is not None})
 
+    if direct_url_fallback_enabled and own_category_rank.get("own_bsr_leaf_rank") is None and first_text(best_sellers_url):
+        leaf_label = first_text(leaf_category_label) or str(category_label or "category")
+        source = "amazon:directBestSellersUrl"
+        category_url = first_text(best_sellers_url)
+        category_node_id = first_text(leaf_category_node_id)
+        fetcher = direct_url_fetcher or fetch_amazon_rank_rows_from_url
+        try:
+            rows = fetcher(
+                category_url,
+                asin=own_asin,
+                category_label=leaf_label,
+                source=source,
+                timeout=direct_url_timeout,
+            )
+        except Exception as exc:
+            bsr_capture_attempts.append(
+                _bsr_capture_failed(
+                    source=source,
+                    category_label=leaf_label,
+                    error=exc,
+                    category_node_id=category_node_id,
+                    category_url=category_url,
+                )
+            )
+            context_failures.append(f"{source} failed for {leaf_label}: {_short_error(exc)}")
+        else:
+            normalized, own_rank, attempts = _normalize_category_rows(
+                rows=rows,
+                source=source,
+                category_label=leaf_label,
+                rank_level="leaf",
+                own_asin=own_asin,
+                category_node_id=category_node_id,
+                category_url=category_url,
+            )
+            category_candidates.extend(normalized)
+            competitor_rows.extend([row for row in normalized if row.get("competitor_asin") != own_asin])
+            bsr_capture_attempts.extend(attempts)
+            own_category_rank.update({key: value for key, value in own_rank.items() if value is not None})
+
+    if direct_url_fallback_enabled and own_category_rank.get("own_new_release_leaf_rank") is None and first_text(new_releases_url):
+        leaf_label = first_text(leaf_category_label) or str(category_label or "category")
+        source = "amazon:directNewReleasesUrl"
+        category_url = first_text(new_releases_url)
+        category_node_id = first_text(leaf_category_node_id)
+        fetcher = direct_url_fetcher or fetch_amazon_rank_rows_from_url
+        try:
+            rows = fetcher(
+                category_url,
+                asin=own_asin,
+                category_label=leaf_label,
+                source=source,
+                timeout=direct_url_timeout,
+            )
+        except Exception as exc:
+            bsr_capture_attempts.append(
+                _bsr_capture_failed(
+                    source=source,
+                    category_label=leaf_label,
+                    error=exc,
+                    category_node_id=category_node_id,
+                    category_url=category_url,
+                )
+            )
+            context_failures.append(f"{source} failed for {leaf_label}: {_short_error(exc)}")
+        else:
+            normalized, own_rank, attempts = _normalize_category_rows(
+                rows=rows,
+                source=source,
+                category_label=leaf_label,
+                rank_level="leaf",
+                own_asin=own_asin,
+                category_node_id=category_node_id,
+                category_url=category_url,
+            )
+            category_candidates.extend(normalized)
+            competitor_rows.extend([row for row in normalized if row.get("competitor_asin") != own_asin])
+            bsr_capture_attempts.extend(attempts)
+            own_category_rank.update({key: value for key, value in own_rank.items() if value is not None})
+
     selected_keywords = [
         {
             "keyword": row["keyword"],
@@ -840,16 +1007,6 @@ def build_public_context(
         excluded={own_asin, *{str(item).upper() for item in excluded_competitor_asins}},
         top_n=max_competitors,
     )
-    successful_bsr = [row for row in bsr_capture_attempts if row.get("bsr_capture_status") != "bsr_capture_failed"]
-    failed_bsr = [row for row in bsr_capture_attempts if row.get("bsr_capture_status") == "bsr_capture_failed"]
-    if successful_bsr:
-        bsr_capture_status = "measured" if any(row.get("bsr_capture_status") == "measured" for row in successful_bsr) else "not_in_bsr_window"
-    elif failed_bsr:
-        bsr_capture_status = "bsr_capture_failed"
-    else:
-        bsr_capture_status = "not_configured"
-    bsr_result_count = sum(int(row.get("bsr_result_count") or 0) for row in successful_bsr)
-    bsr_window_source = ", ".join(sorted({str(row.get("source")) for row in bsr_capture_attempts if row.get("source")}))
     listing_bsr_rank = parse_int(listing.get("best_sellers_rank"))
     if own_category_rank.get("own_bsr_leaf_rank") is None and listing_bsr_rank is not None:
         _set_own_category_rank(
@@ -860,6 +1017,19 @@ def build_public_context(
             category_label=str(listing.get("category_name") or category_label or "category"),
             source="pangolin:amzProductDetail",
         )
+    if not product_detail_bsr_recorded and own_category_rank.get("own_bsr_leaf_source") == "pangolin:amzProductDetail":
+        bsr_capture_attempts.append(
+            {
+                "source": "pangolin:amzProductDetail",
+                "category": own_category_rank.get("own_bsr_leaf_category") or category_label,
+                "category_node_id": first_text(leaf_category_node_id),
+                "category_url": first_text(best_sellers_url),
+                "rank_level": "leaf",
+                "bsr_capture_status": "measured",
+                "bsr_result_count": 1,
+                "bsr_window_size": 1,
+            }
+        )
     if own_category_rank.get("own_bsr_rank") is None:
         own_category_rank["own_bsr_rank"] = own_category_rank.get("own_bsr_leaf_rank") or own_category_rank.get("own_bsr_major_rank")
         own_category_rank["own_bsr_category"] = own_category_rank.get("own_bsr_leaf_category") or own_category_rank.get("own_bsr_major_category")
@@ -868,6 +1038,16 @@ def build_public_context(
         own_category_rank["own_new_release_rank"] = own_category_rank.get("own_new_release_leaf_rank") or own_category_rank.get("own_new_release_major_rank")
         own_category_rank["own_new_release_category"] = own_category_rank.get("own_new_release_leaf_category") or own_category_rank.get("own_new_release_major_category")
         own_category_rank["own_new_release_source"] = own_category_rank.get("own_new_release_leaf_source") or own_category_rank.get("own_new_release_major_source")
+    successful_bsr = [row for row in bsr_capture_attempts if row.get("bsr_capture_status") != "bsr_capture_failed"]
+    failed_bsr = [row for row in bsr_capture_attempts if row.get("bsr_capture_status") == "bsr_capture_failed"]
+    if successful_bsr:
+        bsr_capture_status = "measured" if any(row.get("bsr_capture_status") == "measured" for row in successful_bsr) else "not_in_bsr_window"
+    elif failed_bsr:
+        bsr_capture_status = "bsr_capture_failed"
+    else:
+        bsr_capture_status = "not_configured"
+    bsr_result_count = sum(int(row.get("bsr_result_count") or 0) for row in successful_bsr)
+    bsr_window_source = ", ".join(sorted({str(row.get("source")) for row in bsr_capture_attempts if row.get("source")}))
     return {
         "public_listing": listing,
         "public_context_status": _context_status_from_failures(

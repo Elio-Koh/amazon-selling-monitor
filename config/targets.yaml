@@ -24,6 +24,8 @@ product:
   pangolin_leaf_category_node_id: "14042381"
   pangolin_best_sellers_url: "https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden"
   pangolin_new_releases_url: "https://www.amazon.com/gp/new-releases/home-garden/14042381"
+  amazon_direct_rank_fallback_enabled: true
+  amazon_direct_rank_timeout_seconds: 8
   max_competitors: 10
   core_keywords:
     - milk frother

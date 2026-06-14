@@ -112,6 +112,47 @@ class TimeoutKeywordPangolinClient(FakePangolinClient):
         ]
 
 
+class ListingBsrFallbackPangolinClient(FakePangolinClient):
+    def product_detail(self, *, asin, site, zipcode):
+        product = super().product_detail(asin=asin, site=site, zipcode=zipcode)
+        product["category_id"] = ""
+        product["bestSellersRankItems"] = [
+            {"rank": "#53", "category": "Milk Frothers"},
+        ]
+        return product
+
+    def best_sellers(self, *, category_keyword, site, zipcode, category_node_id=None, category_url=None):
+        self.best_seller_queries.append(
+            {"keyword": category_keyword, "node_id": category_node_id, "url": category_url}
+        )
+        return [
+            {"asin": "B333333333", "title": "Best Seller Milk Frother", "rank": "#1"},
+            {"asin": "B222222222", "title": "Another Milk Frother", "rank": "#2"},
+        ]
+
+
+class DirectUrlFallbackPangolinClient(FakePangolinClient):
+    def product_detail(self, *, asin, site, zipcode):
+        product = super().product_detail(asin=asin, site=site, zipcode=zipcode)
+        product["category_id"] = ""
+        product["category_name"] = "Milk Frothers"
+        product["bestSellersRankItems"] = []
+        product["bestSellersRank"] = ""
+        return product
+
+    def product_of_category(self, *, category_id, site, zipcode):
+        self.product_category_queries.append(category_id)
+        return []
+
+    def best_sellers(self, *, category_keyword, site, zipcode, category_node_id=None, category_url=None):
+        self.best_seller_queries.append(
+            {"keyword": category_keyword, "node_id": category_node_id, "url": category_url}
+        )
+        return [
+            {"asin": "B333333333", "title": "Best Seller Milk Frother", "rank": "#1"},
+        ]
+
+
 def test_normalize_public_listing_splits_discount_and_deal():
     listing = normalize_public_listing(
         {
@@ -252,3 +293,66 @@ def test_build_public_context_uses_configured_leaf_node_for_bsr_and_new_releases
         if row["source"] == "pangolin:amzNewReleases" and row["category_node_id"] == "14042381"
     )
     assert leaf_new_release_attempt["bsr_capture_status"] == "not_in_leaf_new_release_window"
+
+
+def test_build_public_context_uses_product_detail_bsr_when_leaf_list_misses_own_asin():
+    client = ListingBsrFallbackPangolinClient()
+    context = build_public_context(
+        asin="B0GXYYZPBW",
+        marketplace="US",
+        zipcode="10041",
+        core_keywords=["milk frother"],
+        pinned_competitor_asins=[],
+        excluded_competitor_asins=[],
+        client=client,
+        max_competitors=5,
+        max_keywords=1,
+        leaf_category_label="Milk Frothers",
+        leaf_category_node_id="14042381",
+        best_sellers_url="https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
+    )
+
+    assert context["rank"]["own_bsr_leaf_rank"] == 53
+    assert context["rank"]["own_bsr_leaf_category"] == "Milk Frothers"
+    assert context["rank"]["own_bsr_leaf_source"] == "pangolin:amzProductDetail"
+    assert any(
+        row["source"] == "pangolin:amzProductDetail" and row["bsr_capture_status"] == "measured"
+        for row in context["rank"]["bsr_capture_attempts"]
+    )
+
+
+def test_build_public_context_uses_direct_url_fallback_when_pangolin_leaf_list_misses():
+    client = DirectUrlFallbackPangolinClient()
+
+    def fake_fetcher(url, *, asin, category_label, source, timeout):
+        assert asin == "B0GXYYZPBW"
+        assert category_label == "Milk Frothers"
+        assert source == "amazon:directBestSellersUrl"
+        assert "14042381" in url
+        return [
+            {"asin": "B333333333", "rank": 52, "title": "Other Frother"},
+            {"asin": "B0GXYYZPBW", "rank": 53, "title": "InstaWhisk Upgraded Milk Frother"},
+        ]
+
+    context = build_public_context(
+        asin="B0GXYYZPBW",
+        marketplace="US",
+        zipcode="10041",
+        core_keywords=["milk frother"],
+        pinned_competitor_asins=[],
+        excluded_competitor_asins=[],
+        client=client,
+        max_competitors=5,
+        max_keywords=1,
+        leaf_category_label="Milk Frothers",
+        leaf_category_node_id="14042381",
+        best_sellers_url="https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
+        direct_url_fetcher=fake_fetcher,
+    )
+
+    assert context["rank"]["own_bsr_leaf_rank"] == 53
+    assert context["rank"]["own_bsr_leaf_source"] == "amazon:directBestSellersUrl"
+    assert any(
+        row["source"] == "amazon:directBestSellersUrl" and row["bsr_capture_status"] == "measured"
+        for row in context["rank"]["bsr_capture_attempts"]
+    )

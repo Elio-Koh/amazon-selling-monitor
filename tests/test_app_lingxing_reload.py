@@ -73,6 +73,26 @@ class NewMetrics(types.SimpleNamespace):
         return {"window_days": kwargs["window_days"]}
 
 
+class StalePublicContext(types.SimpleNamespace):
+    def build_public_context(self, **kwargs):
+        if "leaf_category_label" in kwargs:
+            raise TypeError("build_public_context() got an unexpected keyword argument 'leaf_category_label'")
+        return {"public_context_status": {"status": "stale"}}
+
+
+class FreshPublicContext(types.SimpleNamespace):
+    def build_public_context(self, **kwargs):
+        return {
+            "public_context_status": {
+                "status": "ok",
+                "message": "Pangolin public context loaded.",
+                "source": "pangolin",
+                "freshness": "2026-06-14T00:01:00Z",
+            },
+            "rank": {"own_bsr_leaf_rank": 53},
+        }
+
+
 def import_app_with_fake_streamlit(monkeypatch):
     monkeypatch.setitem(sys.modules, "streamlit", FakeStreamlit())
     sys.modules.pop("app", None)
@@ -163,6 +183,34 @@ def test_build_dashboard_summary_reloads_when_window_days_keyword_hits_stale_fun
 
     assert reload_calls == [stale_metrics]
     assert summary == {"window_days": 7}
+
+
+def test_build_public_context_reloads_when_leaf_keyword_hits_stale_function(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    stale_public_context = StalePublicContext()
+    fresh_public_context = FreshPublicContext()
+    reload_calls = []
+
+    monkeypatch.setattr(app, "public_context", stale_public_context)
+
+    def fake_reload(module):
+        reload_calls.append(module)
+        return fresh_public_context
+
+    monkeypatch.setattr(app.importlib, "reload", fake_reload)
+
+    result = app.build_public_context_with_reload(
+        asin="B0GXYYZPBW",
+        marketplace="US",
+        zipcode="10041",
+        core_keywords=["milk frother"],
+        pinned_competitor_asins=[],
+        excluded_competitor_asins=[],
+        leaf_category_label="Milk Frothers",
+    )
+
+    assert reload_calls == [stale_public_context]
+    assert result["rank"]["own_bsr_leaf_rank"] == 53
 
 
 def test_own_ranking_values_use_major_and_leaf_rows(monkeypatch):

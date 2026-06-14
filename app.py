@@ -18,10 +18,10 @@ import streamlit as st
 from src import lingxing_api_client
 from src import lingxing_client
 from src import metrics
+from src import public_context
 from src.config import load_targets
 from src.date_windows import PRESETS, DateWindow, resolve_date_window, today_for_timezone
 from src.pangolin_client import PangolinClient, PangolinError
-from src.public_context import build_public_context
 
 
 MARKET_CONTEXT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="market-context")
@@ -213,6 +213,17 @@ def build_summary_with_reload(
         )
 
 
+def build_public_context_with_reload(**kwargs: Any) -> Dict[str, Any]:
+    try:
+        return public_context.build_public_context(**kwargs)
+    except TypeError as exc:
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        importlib.invalidate_caches()
+        refreshed = importlib.reload(public_context)
+        return refreshed.build_public_context(**kwargs)
+
+
 def enrich_public_context(data: Dict[str, Any], targets: Mapping[str, Any]) -> Dict[str, Any]:
     token = secrets_get("PANGOLINFO_API_TOKEN") or secrets_get("PANGOLIN_API_TOKEN")
     return enrich_public_context_with_token(data, targets, str(token) if token else None)
@@ -242,7 +253,7 @@ def enrich_public_context_with_token(
     asin = str(targets.get("asin") or data.get("asin") or lingxing_client.DEFAULT_ASIN)
     marketplace = str(targets.get("marketplace") or "US")
     try:
-        public = build_public_context(
+        public = build_public_context_with_reload(
             asin=asin,
             marketplace=marketplace,
             zipcode=str(targets.get("pangolin_zipcode") or "10041"),
@@ -260,6 +271,8 @@ def enrich_public_context_with_token(
             leaf_category_node_id=safe_text(targets.get("pangolin_leaf_category_node_id"), ""),
             best_sellers_url=safe_text(targets.get("pangolin_best_sellers_url"), ""),
             new_releases_url=safe_text(targets.get("pangolin_new_releases_url"), ""),
+            direct_url_fallback_enabled=bool(targets.get("amazon_direct_rank_fallback_enabled", True)),
+            direct_url_timeout=target_int(targets, "amazon_direct_rank_timeout_seconds", 8),
             client=PangolinClient(api_token=str(token)),
         )
     except (PangolinError, RuntimeError, ValueError, TimeoutError, OSError) as exc:
