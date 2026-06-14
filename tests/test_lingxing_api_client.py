@@ -141,7 +141,15 @@ def test_fetch_dashboard_uses_asin_all_and_sales_fallback_without_orders_endpoin
                 "success": True,
                 "data": {
                     "list": [
-                        {"campaign_id": None, "campaign_name": "summary", "spends": "999"},
+                        {
+                            "campaign_id": None,
+                            "campaign_name": None,
+                            "spends": "9.00",
+                            "sales": "20.00",
+                            "orders": "1",
+                            "clicks": "4",
+                            "impressions": "100",
+                        },
                         {
                             "campaign_id": "c1",
                             "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
@@ -175,6 +183,7 @@ def test_fetch_dashboard_uses_asin_all_and_sales_fallback_without_orders_endpoin
     assert dashboard["variations"][1]["units"] == 5
     assert dashboard["campaigns"][0]["campaign_id"] == "c1"
     assert dashboard["advertising"]["all_ads"]["spend"] == 9.0
+    assert "unknown" not in dashboard["advertising"]["by_product"]
     assert not any(path == "/api/lingxing/orders" for path, _payload in calls)
     assert any("asin-all returned no detail for B0NEWCHILD" in warning for warning in dashboard["source_status"]["warnings"])
 

@@ -5,6 +5,7 @@ class FakePangolinClient:
     def __init__(self):
         self.best_seller_queries = []
         self.new_release_queries = []
+        self.keyword_queries = []
 
     def product_detail(self, *, asin, site, zipcode):
         products = {
@@ -39,6 +40,7 @@ class FakePangolinClient:
         return products.get(asin, {"asin": asin})
 
     def keyword_search(self, *, keyword, site, zipcode):
+        self.keyword_queries.append(keyword)
         return [
             {"asin": "B111111111", "title": "Competing Milk Frother", "price": "$29.99", "star": "4.6", "rating": "1,200", "sponsored": True},
             {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36"},
@@ -80,6 +82,17 @@ class FakePangolinClient:
             {"asin": "B444444444", "title": "New Release Frother", "price": "$34.99", "star": "4.7", "rating": "120 ratings"},
             {"asin": "CCCCCCCCCC", "title": "New Release Frother 2", "price": "$35.99", "star": "4.5", "rating": "88 ratings"},
             {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36 ratings"},
+        ]
+
+
+class TimeoutKeywordPangolinClient(FakePangolinClient):
+    def keyword_search(self, *, keyword, site, zipcode):
+        self.keyword_queries.append(keyword)
+        if keyword == "coffee frother":
+            raise TimeoutError("keyword search timed out")
+        return [
+            {"asin": "B111111111", "title": "Competing Milk Frother", "price": "$29.99", "star": "4.6", "rating": "1,200", "sponsored": True},
+            {"asin": "B0GXYYZPBW", "title": "InstaWhisk Upgraded Milk Frother", "price": "$39.99", "star": "4.8", "rating": "36"},
         ]
 
 
@@ -157,3 +170,29 @@ def test_build_public_context_selects_keywords_and_competitors():
     new_release_competitor = next(row for row in context["market"]["selected_competitors"] if row["asin"] == "B444444444")
     assert category_competitor["rank_relationship"]["category_rank_source"] == "pangolin:amzBestSellers"
     assert new_release_competitor["rank_relationship"]["category_rank_source"] == "pangolin:amzNewReleases"
+
+
+def test_build_public_context_limits_keywords_and_keeps_partial_timeout_data():
+    client = TimeoutKeywordPangolinClient()
+    context = build_public_context(
+        asin="B0GXYYZPBW",
+        marketplace="US",
+        zipcode="10041",
+        core_keywords=["milk frother", "coffee frother", "matcha whisk", "protein mixer"],
+        pinned_competitor_asins=[],
+        excluded_competitor_asins=[],
+        client=client,
+        max_competitors=5,
+        max_keywords=3,
+        category_rankings_enabled=False,
+    )
+
+    assert client.keyword_queries == ["milk frother", "coffee frother", "matcha whisk"]
+    assert context["public_listing"]["asin"] == "B0GXYYZPBW"
+    assert [row["keyword"] for row in context["core_keywords"]] == ["milk frother", "coffee frother", "matcha whisk"]
+    failed_keyword = context["core_keywords"][1]
+    assert failed_keyword["rank_status"] == "failed"
+    assert failed_keyword["missing_fields"] == ["pangolin_keyword_search"]
+    assert context["public_context_status"]["status"] == "partial"
+    assert "coffee frother" in context["public_context_status"]["message"]
+    assert context["rank"]["core_keyword_ranks"][0]["rank_status"] == "measured"

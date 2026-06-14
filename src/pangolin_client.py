@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List
@@ -99,7 +100,12 @@ class PangolinClient:
             body = exc.read().decode("utf-8", errors="replace")
             raise PangolinError(f"Pangolinfo HTTP {exc.code}: {body[:500]}") from exc
         except urllib.error.URLError as exc:
-            raise PangolinError(f"Pangolinfo network error: {exc.reason}") from exc
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in str(reason).lower():
+                raise PangolinError(f"Pangolinfo timeout after {self.timeout}s: {reason}") from exc
+            raise PangolinError(f"Pangolinfo network error: {reason}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise PangolinError(f"Pangolinfo timeout after {self.timeout}s: {exc}") from exc
         try:
             parsed = json.loads(body)
         except json.JSONDecodeError as exc:

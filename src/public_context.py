@@ -476,6 +476,49 @@ def _rank_rows_for_keyword(keyword: str, rows: List[Mapping[str, Any]], own_asin
     return rank, competitors
 
 
+def _failed_keyword_rank(keyword: str, error: Exception) -> Dict[str, Any]:
+    return {
+        "keyword": keyword,
+        "rank_status": "failed",
+        "own_organic_rank": None,
+        "own_ad_rank": None,
+        "result_count": 0,
+        "source": "pangolin:amzKeyword",
+        "freshness": now_iso(),
+        "confidence": "missing",
+        "missing_fields": ["pangolin_keyword_search"],
+        "error": _short_error(error),
+    }
+
+
+def _short_error(error: Exception, *, limit: int = 180) -> str:
+    text = f"{type(error).__name__}: {error}".strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3]}..."
+
+
+def _context_status_from_failures(failures: List[str], *, freshness: Optional[str]) -> Dict[str, Any]:
+    if not failures:
+        return {
+            "status": "ok",
+            "message": "Pangolin public context loaded.",
+            "source": "pangolin",
+            "freshness": freshness,
+            "warnings": [],
+        }
+    shown = "; ".join(failures[:3])
+    if len(failures) > 3:
+        shown = f"{shown}; {len(failures) - 3} more failures"
+    return {
+        "status": "partial",
+        "message": f"Pangolin public context loaded with partial failures: {shown}",
+        "source": "pangolin",
+        "freshness": freshness,
+        "warnings": failures,
+    }
+
+
 def _score_competitors(
     competitors: Iterable[Mapping[str, Any]],
     *,
@@ -604,20 +647,28 @@ def build_public_context(
     include_product_of_category: bool = True,
     include_best_sellers: bool = True,
     include_new_releases: bool = True,
+    max_keywords: int = 3,
 ) -> Dict[str, Any]:
     site = SITE_BY_MARKETPLACE.get(marketplace, f"amz_{marketplace.lower()}")
     own_asin = asin.upper()
     pangolin = client or PangolinClient()
     listing_raw = pangolin.product_detail(asin=own_asin, site=site, zipcode=zipcode)
     listing = normalize_public_listing({**listing_raw, "asin": listing_raw.get("asin") or own_asin}, source="pangolin:amzProductDetail", zipcode=zipcode)
-    keywords = [keyword.strip() for keyword in core_keywords if str(keyword).strip()]
+    keyword_limit = max(int(max_keywords or 0), 0)
+    keywords = [keyword.strip() for keyword in core_keywords if str(keyword).strip()][:keyword_limit]
     rank_rows: List[Dict[str, Any]] = []
     competitor_rows: List[Dict[str, Any]] = []
     category_candidates: List[Dict[str, Any]] = []
     bsr_capture_attempts: List[Dict[str, Any]] = []
+    context_failures: List[str] = []
     own_category_rank: Dict[str, Any] = _own_bsr_ranks_from_listing(listing)
     for keyword in keywords:
-        rows = pangolin.keyword_search(keyword=keyword, site=site, zipcode=zipcode)
+        try:
+            rows = pangolin.keyword_search(keyword=keyword, site=site, zipcode=zipcode)
+        except Exception as exc:
+            rank_rows.append(_failed_keyword_rank(keyword, exc))
+            context_failures.append(f"keyword_search failed for {keyword}: {_short_error(exc)}")
+            continue
         rank, competitors = _rank_rows_for_keyword(keyword, rows, own_asin)
         rank_rows.append(rank)
         competitor_rows.extend(competitors)
@@ -663,6 +714,7 @@ def build_public_context(
             rows = fetch_rows()
         except Exception as exc:
             bsr_capture_attempts.append(_bsr_capture_failed(source=source, category_label=source_category_label, error=exc))
+            context_failures.append(f"{source} failed for {source_category_label}: {_short_error(exc)}")
             continue
         normalized, own_rank, attempts = _normalize_category_rows(
             rows=rows,
@@ -726,6 +778,10 @@ def build_public_context(
         own_category_rank["own_new_release_source"] = own_category_rank.get("own_new_release_leaf_source") or own_category_rank.get("own_new_release_major_source")
     return {
         "public_listing": listing,
+        "public_context_status": _context_status_from_failures(
+            context_failures,
+            freshness=listing.get("freshness") if isinstance(listing, Mapping) else now_iso(),
+        ),
         "core_keywords": selected_keywords,
         "rank": {
             "core_keyword_ranks": rank_rows,

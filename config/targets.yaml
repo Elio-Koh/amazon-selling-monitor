@@ -19,6 +19,7 @@ product:
   pangolin_include_product_of_category: true
   pangolin_include_best_sellers: true
   pangolin_include_new_releases: true
+  pangolin_max_keywords: 3
   max_competitors: 10
   core_keywords:
     - milk frother

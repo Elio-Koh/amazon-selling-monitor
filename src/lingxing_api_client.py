@@ -498,7 +498,10 @@ def _is_campaign_summary_row(row: Mapping[str, Any]) -> bool:
     campaign_id = first_present(row, ("campaign_id", "campaignId", "id"))
     if campaign_id not in (None, ""):
         return False
-    name = str(first_present(row, ("campaign_name", "campaignName", "name")) or "").strip().lower()
+    campaign_name = first_present(row, ("campaign_name", "campaignName", "name"))
+    name = str(campaign_name or "").strip().lower()
+    if not name:
+        return True
     if name in {"summary", "total", "合计", "汇总"}:
         return True
     return bool(row.get("is_summary") or row.get("summary"))

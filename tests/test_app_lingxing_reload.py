@@ -275,6 +275,36 @@ def test_enrich_public_context_without_token_preserves_configured_keywords(monke
     assert "PANGOLINFO_API_TOKEN" in enriched["source_status"]["warnings"][0]
 
 
+def test_load_market_context_downgrades_unexpected_timeout(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    data = {
+        "asin": "B0GXYYZPBW",
+        "context": {"listing": {"title": "Sample milk frother"}},
+        "source_status": {"warnings": []},
+    }
+
+    def raise_timeout(*args, **kwargs):
+        raise TimeoutError("Pangolin keyword search timed out")
+
+    monkeypatch.setattr(app, "enrich_public_context", raise_timeout)
+
+    result = app.load_market_context(
+        1,
+        data,
+        {
+            "asin": "B0GXYYZPBW",
+            "marketplace": "US",
+            "core_keywords": ["milk frother", "coffee frother"],
+        },
+    )
+
+    status = result["context"]["public_context_status"]
+    assert status["status"] == "failed"
+    assert "TimeoutError" in status["message"]
+    assert result["context"]["core_keywords"][0]["rank_status"] == "not_checked"
+    assert "Market context failed" in result["source_status"]["warnings"][0]
+
+
 def test_offer_value_formatting_uses_yes_no_and_none(monkeypatch):
     app = import_app_with_fake_streamlit(monkeypatch)
 

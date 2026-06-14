@@ -73,6 +73,13 @@ def secrets_get(key: str, default: Any = None) -> Any:
         return os.environ.get(key, default)
 
 
+def target_int(targets: Mapping[str, Any], key: str, default: int) -> int:
+    try:
+        return int(targets.get(key) or default)
+    except (TypeError, ValueError):
+        return default
+
+
 def app_version() -> str:
     for key in ("STREAMLIT_GIT_COMMIT", "SOURCE_VERSION", "GIT_COMMIT", "COMMIT_SHA"):
         value = os.environ.get(key)
@@ -230,7 +237,8 @@ def enrich_public_context(data: Dict[str, Any], targets: Mapping[str, Any]) -> D
             core_keywords=core_keywords,
             pinned_competitor_asins=[str(item) for item in targets.get("pinned_competitor_asins", []) or []],
             excluded_competitor_asins=[str(item) for item in targets.get("excluded_competitor_asins", []) or []],
-            max_competitors=int(targets.get("max_competitors") or 10),
+            max_competitors=target_int(targets, "max_competitors", 10),
+            max_keywords=target_int(targets, "pangolin_max_keywords", 3),
             category_rankings_enabled=bool(targets.get("pangolin_category_rankings_enabled", True)),
             category_keyword=safe_text(targets.get("pangolin_category_keyword"), ""),
             include_product_of_category=bool(targets.get("pangolin_include_product_of_category", True)),
@@ -238,18 +246,24 @@ def enrich_public_context(data: Dict[str, Any], targets: Mapping[str, Any]) -> D
             include_new_releases=bool(targets.get("pangolin_include_new_releases", True)),
             client=PangolinClient(api_token=str(token)),
         )
-    except (PangolinError, RuntimeError, ValueError) as exc:
+    except (PangolinError, RuntimeError, ValueError, TimeoutError, OSError) as exc:
         _set_public_context_status(context, "failed", f"{type(exc).__name__}: {exc}", core_keywords)
         warnings.append(f"Pangolin public context failed: {type(exc).__name__}: {exc}")
         return data
 
     context.update(public)
-    context["public_context_status"] = {
-        "status": "ok",
-        "message": "Pangolin public context loaded.",
-        "source": "pangolin",
-        "freshness": context.get("public_listing", {}).get("freshness"),
-    }
+    status = public.get("public_context_status") if isinstance(public.get("public_context_status"), Mapping) else None
+    if status:
+        context["public_context_status"] = dict(status)
+        if status.get("status") == "partial":
+            warnings.append(str(status.get("message") or "Pangolin public context loaded with partial failures."))
+    else:
+        context["public_context_status"] = {
+            "status": "ok",
+            "message": "Pangolin public context loaded.",
+            "source": "pangolin",
+            "freshness": context.get("public_listing", {}).get("freshness"),
+        }
     return data
 
 
@@ -416,7 +430,19 @@ def load_market_context(
     targets: Mapping[str, Any],
 ) -> Dict[str, Any]:
     del force_refresh_key
-    return enrich_public_context(copy.deepcopy(data), targets)
+    try:
+        return enrich_public_context(copy.deepcopy(data), targets)
+    except Exception as exc:
+        fallback = copy.deepcopy(data)
+        context = fallback.setdefault("context", {})
+        warnings = fallback.setdefault("source_status", {}).setdefault("warnings", [])
+        core_keywords = [str(item) for item in targets.get("core_keywords", []) or [] if str(item).strip()]
+        if not core_keywords:
+            listing = context.get("listing") if isinstance(context.get("listing"), Mapping) else {}
+            core_keywords = _keywords_from_title(str(listing.get("title") or ""), limit=target_int(targets, "pangolin_max_keywords", 3))
+        _set_public_context_status(context, "failed", f"{type(exc).__name__}: {exc}", core_keywords)
+        warnings.append(f"Market context failed: {type(exc).__name__}: {exc}")
+        return fallback
 
 
 def inject_css() -> None:
@@ -848,6 +874,14 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
     sales = data.get("sales", {})
     all_ads = summary["advertising"]["all_ads"]
     sp = summary["advertising"]["sp"]
+
+    public_status = context.get("public_context_status") if isinstance(context.get("public_context_status"), Mapping) else {}
+    public_status_name = public_status.get("status")
+    public_status_message = public_status.get("message")
+    if public_status_name == "partial" and public_status_message:
+        st.warning(public_status_message)
+    elif public_status_name in {"failed", "missing_token"} and public_status_message:
+        st.error(public_status_message)
 
     st.subheader("Context Quality")
     render_key_values(
