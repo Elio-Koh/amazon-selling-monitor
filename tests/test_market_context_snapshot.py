@@ -214,3 +214,10 @@ def test_snapshot_freshness_thresholds():
     assert snapshot_freshness(captured_at, now=datetime(2026, 6, 14, 12, 5, tzinfo=timezone.utc), stale_minutes=10, expired_minutes=120)["status"] == "fresh"
     assert snapshot_freshness(captured_at, now=datetime(2026, 6, 14, 12, 30, tzinfo=timezone.utc), stale_minutes=10, expired_minutes=120)["status"] == "stale"
     assert snapshot_freshness(captured_at, now=datetime(2026, 6, 14, 14, 30, tzinfo=timezone.utc), stale_minutes=10, expired_minutes=120)["status"] == "expired"
+
+
+def test_snapshot_freshness_uses_operational_twenty_minute_stale_threshold():
+    captured_at = "2026-06-14T12:00:00Z"
+
+    assert snapshot_freshness(captured_at, now=datetime(2026, 6, 14, 12, 13, tzinfo=timezone.utc), stale_minutes=20, expired_minutes=120)["status"] == "fresh"
+    assert snapshot_freshness(captured_at, now=datetime(2026, 6, 14, 12, 21, tzinfo=timezone.utc), stale_minutes=20, expired_minutes=120)["status"] == "stale"

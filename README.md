@@ -39,7 +39,7 @@ MARKET_CONTEXT_SNAPSHOT_URL = "https://raw.githubusercontent.com/<owner>/<repo>/
 
 `MARKET_CONTEXT_SNAPSHOT_URL` 指向 GitHub Actions 发布到独立 `market-context-data` 分支的加密完整 Market Context 快照。配置后，Streamlit 页面会优先读取 `latest.enc.json` 并用 `MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY` 解密，不在用户访问时实时跑 Pangolin 全量抓取。这个 key 必须和 GitHub Actions 中的同名 secret 完全一致。
 
-GitHub Actions 每 10 分钟生成一次完整 Market Context 快照。请在 GitHub 仓库 Secrets 中配置：
+GitHub Actions 目标每 10 分钟生成一次完整 Market Context 快照。定时触发使用错峰 cron，避开 GitHub Actions 每小时开始附近的高峰；但 GitHub 官方不保证 `schedule` 精确准时，负载高时可能延迟或丢弃。页面默认 20 分钟后才把 snapshot 标记为 stale，并继续展示最近一份完整快照。请在 GitHub 仓库 Secrets 中配置：
 
 ```text
 PANGOLINFO_API_TOKEN
@@ -64,6 +64,18 @@ MARKET_CONTEXT_EXCLUDED_COMPETITOR_ASINS
 `MARKET_CONTEXT_PRODUCT_URL` 只有在默认 `https://www.amazon.com/dp/<ASIN>` 被跳转或拦截时才需要配置，用于补齐 public listing 字段。
 
 Action 生成的是加密后的 `latest.enc.json`，并强制推送到 `market-context-data` 分支。仓库默认分支不保存真实 ASIN、真实 endpoint、dashboard URL 或明文 Market Context 数据。请确认 GitHub repository 的 Actions 权限允许 `Read and write permissions`，否则 workflow 无法更新 data branch。
+
+如果需要比 GitHub schedule 更稳定的兜底，可以在腾讯云服务器用 cron 调 GitHub `repository_dispatch`，触发同一个 workflow：
+
+```bash
+curl -X POST \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $GITHUB_DISPATCH_TOKEN" \
+  https://api.github.com/repos/Elio-Koh/amazon-selling-monitor/dispatches \
+  -d '{"event_type":"market_context_snapshot"}'
+```
+
+`GITHUB_DISPATCH_TOKEN` 需要具备触发 Actions/workflow dispatch 的权限，只保存在腾讯云环境变量或服务器 secret 中，不写入 repo。
 
 `PANGOLINFO_API_TOKEN` 用于 GitHub Actions 生成 public context：Listing 前台 offer、delivery promise、核心关键词 SERP、竞品选择与排名上下文。不要把真实 token 或真实目标配置写入 Git；只放在 Streamlit Cloud Secrets 或 GitHub Secrets。更新 secrets 或拉取新 commit 后，从 Streamlit Cloud 的 Manage app 重启应用，并点击页面里的 `Refresh Data` 清理缓存。
 

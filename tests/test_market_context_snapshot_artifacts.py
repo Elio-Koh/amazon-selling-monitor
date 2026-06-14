@@ -15,22 +15,35 @@ def test_snapshot_generator_script_exists_with_expected_entrypoint():
     assert "targets_with_env_overrides" in text
 
 
-def test_github_action_runs_every_ten_minutes_and_publishes_encrypted_data_branch():
+def test_github_action_runs_offset_ten_minute_schedule_and_publishes_encrypted_data_branch():
     workflow = Path(".github/workflows/market-context-snapshot.yml")
 
     assert workflow.exists()
     text = workflow.read_text()
-    assert "*/10 * * * *" in text
+    assert "3,13,23,33,43,53 * * * *" in text
+    assert "*/10 * * * *" not in text
     assert "workflow_dispatch" in text
+    assert "repository_dispatch" in text
+    assert "market_context_snapshot" in text
+    assert "concurrency:" in text
+    assert "paths:" in text
     assert "market-context-data" in text
     assert "contents: write" in text
     assert "latest.enc.json" in text
     assert "MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY" in text
     assert "MARKET_CONTEXT_ASIN" in text
+    assert "Snapshot envelope:" in text
+    assert "Data branch head:" in text
     assert "git push --force" in text
     assert "TENCENT_SSH_HOST" not in text
     assert "scp" not in text
     assert "ssh-keyscan" not in text
+
+
+def test_default_snapshot_stale_threshold_allows_schedule_jitter():
+    targets = Path("config/targets.yaml").read_text()
+
+    assert "market_context_snapshot_stale_minutes: 20" in targets
 
 
 def test_encrypted_snapshot_generation_requires_private_target_asin(monkeypatch, tmp_path):
