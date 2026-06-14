@@ -56,9 +56,12 @@ MARKET_CONTEXT_CORE_KEYWORDS
 可选 GitHub Secrets：
 
 ```text
+MARKET_CONTEXT_PRODUCT_URL
 MARKET_CONTEXT_PINNED_COMPETITOR_ASINS
 MARKET_CONTEXT_EXCLUDED_COMPETITOR_ASINS
 ```
+
+`MARKET_CONTEXT_PRODUCT_URL` 只有在默认 `https://www.amazon.com/dp/<ASIN>` 被跳转或拦截时才需要配置，用于补齐 public listing 字段。
 
 Action 生成的是加密后的 `latest.enc.json`，并强制推送到 `market-context-data` 分支。仓库默认分支不保存真实 ASIN、真实 endpoint、dashboard URL 或明文 Market Context 数据。请确认 GitHub repository 的 Actions 权限允许 `Read and write permissions`，否则 workflow 无法更新 data branch。
 

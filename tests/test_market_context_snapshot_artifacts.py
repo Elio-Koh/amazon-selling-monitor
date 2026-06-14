@@ -43,6 +43,43 @@ def test_encrypted_snapshot_generation_requires_private_target_asin(monkeypatch,
     assert rc == 2
 
 
+def test_snapshot_generator_failure_prints_safe_field_diagnostics(monkeypatch, tmp_path, capsys):
+    snapshot = {
+        "schema_version": "1.0",
+        "snapshot_status": "complete",
+        "captured_at": "2026-06-14T12:00:00Z",
+        "market_context": {
+            "public_listing": {
+                "source": "pangolin:amzProductDetail",
+                "missing_fields": ["title", "price_display"],
+            },
+            "public_context_status": {
+                "status": "partial",
+                "message": "Pangolin product detail missing fields; direct product page fallback failed.",
+            },
+            "rank": {"bsr_capture_status": "measured"},
+            "core_keywords": [],
+            "market": {"selected_competitors": []},
+        },
+    }
+
+    monkeypatch.setenv("PANGOLINFO_API_TOKEN", "secret-token")
+    monkeypatch.setenv("MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY", "secret-key")
+    monkeypatch.setenv("MARKET_CONTEXT_ASIN", "B0SECRET001")
+    monkeypatch.setattr(snapshot_generator, "build_snapshot", lambda **kwargs: snapshot)
+
+    rc = snapshot_generator.main(["--encrypt", "--output", str(tmp_path / "latest.enc.json")])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "listing_source=pangolin:amzProductDetail" in captured.err
+    assert "listing_missing_fields=title, price_display" in captured.err
+    assert "public_context_status=partial" in captured.err
+    assert "bsr_capture_status=measured" in captured.err
+    assert "secret-token" not in captured.err
+    assert "B0SECRET001" not in captured.err
+
+
 def test_repo_does_not_contain_real_product_identifiers():
     blocked = [
         "B0G" + "XYYZPBW",

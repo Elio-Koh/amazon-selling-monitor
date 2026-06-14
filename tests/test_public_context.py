@@ -1,5 +1,10 @@
 from src import public_context
-from src.public_context import build_public_context, fetch_amazon_rank_rows_from_url, normalize_public_listing
+from src.public_context import (
+    build_public_context,
+    fetch_amazon_product_listing_from_url,
+    fetch_amazon_rank_rows_from_url,
+    normalize_public_listing,
+)
 
 
 class FakePangolinClient:
@@ -29,6 +34,7 @@ class FakePangolinClient:
                 "image": "https://example.test/frother.jpg",
                 "features": ["Rechargeable", "Variable speed", "Detachable whisk"],
                 "deliveryTime": {"deliveryTime": "Mon, Jun 15", "fastestDelivery": "Sat, Jun 13"},
+                "fulfillment": "FBA",
             },
             "B111111111": {
                 "asin": "B111111111",
@@ -180,6 +186,18 @@ class ProductDetailFailurePangolinClient(FakePangolinClient):
         return []
 
 
+class MissingListingFieldsPangolinClient(FakePangolinClient):
+    def product_detail(self, *, asin, site, zipcode):
+        return {
+            "asin": asin,
+            "coupon": "",
+            "badge": "",
+            "bestSellersRankItems": [
+                {"rank": "#53", "category": "Milk Frothers"},
+            ],
+        }
+
+
 def test_normalize_public_listing_splits_discount_and_deal():
     listing = normalize_public_listing(
         {
@@ -242,6 +260,50 @@ def test_fetch_amazon_rank_rows_from_url_counts_second_page_rank(monkeypatch):
     assert rows[-1]["rank"] == 53
 
 
+def test_fetch_amazon_product_listing_from_url_extracts_required_fields(monkeypatch):
+    html = """
+    <html>
+      <head>
+        <meta property="og:title" content="SampleWhisk Milk Frother">
+        <meta name="description" content="Sample listing">
+        <script type="application/ld+json">
+          {"@type":"Product","name":"SampleWhisk Milk Frother","aggregateRating":{"ratingValue":"4.8","reviewCount":"36"},"offers":{"price":"39.99","priceCurrency":"USD","availability":"https://schema.org/InStock"}}
+        </script>
+      </head>
+      <body>
+        <span id="priceblock_ourprice">$39.99</span>
+        <div id="merchant-info">Ships from Amazon.com</div>
+        <div id="mir-layout-DELIVERY_BLOCK">FREE delivery Monday, June 15</div>
+      </body>
+    </html>
+    """
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return html.encode("utf-8")
+
+    monkeypatch.setattr(public_context.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+
+    listing = fetch_amazon_product_listing_from_url(
+        "https://www.amazon.com/dp/B0TEST0001",
+        asin="B0TEST0001",
+        timeout=1,
+    )
+
+    assert listing["title"] == "SampleWhisk Milk Frother"
+    assert listing["price"] == "$39.99"
+    assert listing["rating"] == "4.8"
+    assert listing["review_count"] == "36"
+    assert "Monday" in listing["delivery"]
+    assert listing["fulfillment"] == "Ships from Amazon.com"
+
+
 def test_normalize_public_listing_reads_delivery_promise_aliases():
     listing = normalize_public_listing(
         {
@@ -253,6 +315,47 @@ def test_normalize_public_listing_reads_delivery_promise_aliases():
     )
 
     assert listing["delivery_promise"] == "Mon, Jun 15; fastest Sat, Jun 13"
+
+
+def test_build_public_context_merges_direct_product_listing_fallback():
+    client = MissingListingFieldsPangolinClient()
+
+    def fake_product_fetcher(url, *, asin, timeout):
+        assert "/dp/" in url
+        return {
+            "asin": asin,
+            "title": "Direct Page Milk Frother",
+            "price": "$39.99",
+            "rating": "4.8",
+            "review_count": "36",
+            "delivery": "FREE delivery Monday, June 15",
+            "fulfillment": "Ships from Amazon.com",
+        }
+
+    context = build_public_context(
+        asin="B0TEST0001",
+        marketplace="US",
+        zipcode="10041",
+        core_keywords=["milk frother", "coffee frother", "handheld milk frother"],
+        pinned_competitor_asins=[],
+        excluded_competitor_asins=[],
+        client=client,
+        max_competitors=5,
+        max_keywords=3,
+        leaf_category_label="Milk Frothers",
+        leaf_category_node_id="14042381",
+        best_sellers_url="https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
+        direct_product_fetcher=fake_product_fetcher,
+    )
+
+    listing = context["public_listing"]
+    assert listing["title"] == "Direct Page Milk Frother"
+    assert listing["price_display"] == "$39.99"
+    assert listing["rating"] == 4.8
+    assert listing["review_count"] == 36
+    assert listing["delivery_promise"] == "FREE delivery Monday, June 15"
+    assert listing["fulfillment_method"] == "Ships from Amazon.com"
+    assert listing["source"] == "pangolin:amzProductDetail+amazon:directProductPage"
 
 
 def test_build_public_context_selects_keywords_and_competitors():
@@ -343,6 +446,7 @@ def test_build_public_context_uses_configured_leaf_node_for_bsr_and_new_releases
         leaf_category_node_id="14042381",
         best_sellers_url="https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
         new_releases_url="https://www.amazon.com/gp/new-releases/home-garden/14042381",
+        direct_url_fallback_enabled=False,
     )
 
     assert client.product_category_queries[-1] == "14042381"
@@ -420,6 +524,15 @@ def test_build_public_context_uses_direct_url_fallback_when_pangolin_leaf_list_m
         leaf_category_node_id="14042381",
         best_sellers_url="https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
         direct_url_fetcher=fake_fetcher,
+        direct_product_fetcher=lambda url, *, asin, timeout: {
+            "asin": asin,
+            "title": "Direct Page Milk Frother",
+            "price": "$39.99",
+            "rating": "4.8",
+            "review_count": "36",
+            "delivery": "FREE delivery Monday, June 15",
+            "fulfillment": "Ships from Amazon.com",
+        },
     )
 
     assert context["rank"]["own_bsr_leaf_rank"] == 53
@@ -456,6 +569,15 @@ def test_configured_leaf_bsr_overrides_product_detail_intermediate_category():
         leaf_category_node_id="14042381",
         best_sellers_url="https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
         direct_url_fetcher=fake_fetcher,
+        direct_product_fetcher=lambda url, *, asin, timeout: {
+            "asin": asin,
+            "title": "Direct Page Milk Frother",
+            "price": "$39.99",
+            "rating": "4.8",
+            "review_count": "36",
+            "delivery": "FREE delivery Monday, June 15",
+            "fulfillment": "Ships from Amazon.com",
+        },
     )
 
     assert context["rank"]["own_bsr_leaf_rank"] == 53
@@ -494,6 +616,15 @@ def test_build_public_context_uses_direct_url_when_product_detail_fails():
         leaf_category_node_id="14042381",
         best_sellers_url="https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
         direct_url_fetcher=fake_fetcher,
+        direct_product_fetcher=lambda url, *, asin, timeout: {
+            "asin": asin,
+            "title": "Direct Page Milk Frother",
+            "price": "$39.99",
+            "rating": "4.8",
+            "review_count": "36",
+            "delivery": "FREE delivery Monday, June 15",
+            "fulfillment": "Ships from Amazon.com",
+        },
     )
 
     assert context["public_context_status"]["status"] == "partial"

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
@@ -28,6 +29,7 @@ ENV_TARGET_OVERRIDES = {
     "MARKET_CONTEXT_LEAF_CATEGORY_NODE_ID": "pangolin_leaf_category_node_id",
     "MARKET_CONTEXT_BEST_SELLERS_URL": "pangolin_best_sellers_url",
     "MARKET_CONTEXT_NEW_RELEASES_URL": "pangolin_new_releases_url",
+    "MARKET_CONTEXT_PRODUCT_URL": "amazon_product_url",
 }
 
 
@@ -86,6 +88,7 @@ def build_snapshot(*, targets: Mapping[str, Any], api_token: str) -> Dict[str, A
         leaf_category_node_id=str(targets.get("pangolin_leaf_category_node_id") or ""),
         best_sellers_url=str(targets.get("pangolin_best_sellers_url") or ""),
         new_releases_url=str(targets.get("pangolin_new_releases_url") or ""),
+        product_url=str(targets.get("amazon_product_url") or ""),
         direct_url_fallback_enabled=bool(targets.get("amazon_direct_rank_fallback_enabled", True)),
         direct_url_timeout=_int_value(targets, "amazon_direct_rank_timeout_seconds", 4),
         direct_url_max_pages=_int_value(targets, "amazon_direct_rank_max_pages", 2),
@@ -106,6 +109,27 @@ def build_snapshot(*, targets: Mapping[str, Any], api_token: str) -> Dict[str, A
         "warnings": context.get("public_context_status", {}).get("warnings") or [],
     }
     return validate_market_context_snapshot(snapshot)
+
+
+def snapshot_diagnostics(snapshot: Mapping[str, Any]) -> str:
+    context = snapshot.get("market_context") if isinstance(snapshot.get("market_context"), Mapping) else {}
+    listing = context.get("public_listing") if isinstance(context.get("public_listing"), Mapping) else {}
+    status = context.get("public_context_status") if isinstance(context.get("public_context_status"), Mapping) else {}
+    rank = context.get("rank") if isinstance(context.get("rank"), Mapping) else {}
+    def safe(value: Any) -> str:
+        text = str(value or "")
+        text = re.sub(r"https?://\S+", "[url-redacted]", text)
+        text = re.sub(r"\bB0[A-Z0-9]{8}\b", "[asin-redacted]", text)
+        return text
+
+    pieces = [
+        f"listing_source={safe(listing.get('source') or 'unknown')}",
+        "listing_missing_fields=" + safe(", ".join(str(item) for item in listing.get("missing_fields") or [])),
+        f"public_context_status={safe(status.get('status') or 'unknown')}",
+        f"public_context_message={safe(status.get('message') or '')}",
+        f"bsr_capture_status={safe(rank.get('bsr_capture_status') or 'unknown')}",
+    ]
+    return "; ".join(pieces)
 
 
 def parse_args(argv: Iterable[str]) -> argparse.Namespace:
@@ -139,6 +163,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             payload = snapshot
         args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     except Exception as exc:
+        snapshot = locals().get("snapshot")
+        if isinstance(snapshot, Mapping):
+            print(f"Market context snapshot diagnostics: {snapshot_diagnostics(snapshot)}", file=sys.stderr)
         print(f"Market context snapshot generation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     print(json.dumps({"output": str(args.output), "captured_at": snapshot["captured_at"]}, sort_keys=True))

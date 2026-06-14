@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+import json
 import re
 import urllib.parse
 import urllib.request
@@ -20,6 +22,25 @@ SITE_BY_MARKETPLACE = {
     "IN": "amz_in",
     "CA": "amz_ca",
 }
+
+AMAZON_DOMAIN_BY_MARKETPLACE = {
+    "US": "www.amazon.com",
+    "CA": "www.amazon.ca",
+    "UK": "www.amazon.co.uk",
+    "DE": "www.amazon.de",
+    "AU": "www.amazon.com.au",
+    "MX": "www.amazon.com.mx",
+    "IN": "www.amazon.in",
+}
+
+LISTING_REQUIRED_FIELDS = (
+    "title",
+    "price_display",
+    "rating",
+    "review_count",
+    "delivery_promise",
+    "fulfillment_method",
+)
 
 
 def now_iso() -> str:
@@ -153,6 +174,111 @@ def normalize_delivery(value: Any) -> Optional[str]:
     return first_text(value)
 
 
+def listing_missing_fields(listing: Mapping[str, Any]) -> List[str]:
+    return [field for field in LISTING_REQUIRED_FIELDS if listing.get(field) in (None, "", [], {})]
+
+
+def _meta_content(html_text: str, key: str) -> Optional[str]:
+    patterns = [
+        rf'<meta[^>]+property=["\']{re.escape(key)}["\'][^>]+content=["\']([^"\']+)["\']',
+        rf'<meta[^>]+name=["\']{re.escape(key)}["\'][^>]+content=["\']([^"\']+)["\']',
+        rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{re.escape(key)}["\']',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html_text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return html.unescape(match.group(1)).strip()
+    return None
+
+
+def _element_text(html_text: str, element_id: str) -> Optional[str]:
+    match = re.search(
+        rf'<[^>]+id=["\']{re.escape(element_id)}["\'][^>]*>(.*?)</[^>]+>',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    text = re.sub(r"<[^>]+>", " ", match.group(1))
+    return re.sub(r"\s+", " ", html.unescape(text)).strip() or None
+
+
+def _json_ld_products(html_text: str) -> List[Mapping[str, Any]]:
+    products: List[Mapping[str, Any]] = []
+    for match in re.finditer(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        raw = html.unescape(match.group(1).strip())
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        entries = parsed if isinstance(parsed, list) else [parsed]
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            graph = entry.get("@graph")
+            candidates = graph if isinstance(graph, list) else [entry]
+            for candidate in candidates:
+                if not isinstance(candidate, Mapping):
+                    continue
+                type_value = candidate.get("@type")
+                types = type_value if isinstance(type_value, list) else [type_value]
+                if any(str(item).lower() == "product" for item in types):
+                    products.append(candidate)
+    return products
+
+
+def product_page_url_for_asin(asin: str, marketplace: str) -> str:
+    domain = AMAZON_DOMAIN_BY_MARKETPLACE.get(marketplace.upper(), "www.amazon.com")
+    return f"https://{domain}/dp/{asin.upper().strip()}"
+
+
+def fetch_amazon_product_listing_from_url(url: str, *, asin: str, timeout: int = 8) -> Dict[str, Any]:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=max(int(timeout or 1), 1)) as response:
+        html_text = response.read().decode("utf-8", errors="ignore")
+    product = _json_ld_products(html_text)[0] if _json_ld_products(html_text) else {}
+    offers = product.get("offers") if isinstance(product.get("offers"), Mapping) else {}
+    aggregate_rating = product.get("aggregateRating") if isinstance(product.get("aggregateRating"), Mapping) else {}
+    title = first_text(product.get("name")) or _meta_content(html_text, "og:title") or _element_text(html_text, "productTitle")
+    price = first_text(offers.get("price")) or _meta_content(html_text, "product:price:amount")
+    if price and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", price):
+        price = f"${price}"
+    listing = {
+        "asin": asin.upper().strip(),
+        "title": title,
+        "price": price or _element_text(html_text, "priceblock_ourprice") or _element_text(html_text, "priceblock_dealprice"),
+        "rating": first_text(aggregate_rating.get("ratingValue")) or _element_text(html_text, "acrPopover"),
+        "review_count": first_text(aggregate_rating.get("reviewCount")) or _element_text(html_text, "acrCustomerReviewText"),
+        "delivery": _element_text(html_text, "mir-layout-DELIVERY_BLOCK") or _element_text(html_text, "availability"),
+        "fulfillment": _element_text(html_text, "merchant-info") or "Amazon/direct listing page",
+    }
+    return {key: value for key, value in listing.items() if value not in (None, "", [], {})}
+
+
+def _merge_listing(primary: Mapping[str, Any], fallback: Mapping[str, Any]) -> Dict[str, Any]:
+    merged = dict(primary)
+    for key, value in fallback.items():
+        if merged.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
+            merged[key] = value
+    if fallback and fallback.get("source") and primary.get("source"):
+        merged["source"] = f"{primary['source']}+{fallback['source']}"
+    return merged
+
+
 def normalize_public_listing(product: Mapping[str, Any], *, source: str, zipcode: str) -> Dict[str, Any]:
     captured_at = now_iso()
     price_display = first_text(product.get("price") or product.get("price_display"))
@@ -182,7 +308,7 @@ def normalize_public_listing(product: Mapping[str, Any], *, source: str, zipcode
         "discount_present": discount_present,
         "deal_present": deal_present,
         "rating": parse_float(product.get("star") or product.get("rating_value") or product.get("rating")),
-        "review_count": parse_int(product.get("rating") or product.get("customerReviews") or product.get("review_count")),
+        "review_count": parse_int(product.get("customerReviews") or product.get("review_count") or product.get("rating")),
         "main_image_url": images[0] if images else None,
         "image_count": len(images),
         "bullets_count": len(features),
@@ -211,8 +337,7 @@ def normalize_public_listing(product: Mapping[str, Any], *, source: str, zipcode
         "confidence": "measured",
         "zipcode": zipcode,
     }
-    required = ("price_display", "coupon_present", "deal_present", "rating", "review_count", "title")
-    out["missing_fields"] = [field for field in required if out.get(field) is None]
+    out["missing_fields"] = listing_missing_fields(out)
     return out
 
 
@@ -785,10 +910,12 @@ def build_public_context(
     leaf_category_node_id: Optional[str] = None,
     best_sellers_url: Optional[str] = None,
     new_releases_url: Optional[str] = None,
+    product_url: Optional[str] = None,
     direct_url_fallback_enabled: bool = True,
     direct_url_timeout: int = 8,
     direct_url_max_pages: int = 2,
     direct_url_fetcher: Optional[Callable[..., List[Dict[str, Any]]]] = None,
+    direct_product_fetcher: Optional[Callable[..., Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     site = SITE_BY_MARKETPLACE.get(marketplace, f"amz_{marketplace.lower()}")
     own_asin = asin.upper()
@@ -800,6 +927,39 @@ def build_public_context(
         listing_raw = {"asin": own_asin}
         context_failures.append(f"product_detail failed: {_short_error(exc)}")
     listing = normalize_public_listing({**listing_raw, "asin": listing_raw.get("asin") or own_asin}, source="pangolin:amzProductDetail", zipcode=zipcode)
+    missing_listing_fields = listing_missing_fields(listing)
+    if direct_url_fallback_enabled and missing_listing_fields:
+        direct_product_url = first_text(product_url) or product_page_url_for_asin(own_asin, marketplace)
+        try:
+            if direct_product_fetcher is None:
+                direct_listing_raw = fetch_amazon_product_listing_from_url(
+                    direct_product_url,
+                    asin=own_asin,
+                    timeout=direct_url_timeout,
+                )
+            else:
+                direct_listing_raw = direct_product_fetcher(
+                    direct_product_url,
+                    asin=own_asin,
+                    timeout=direct_url_timeout,
+                )
+        except Exception as exc:
+            context_failures.append(
+                "direct product page fallback failed for public listing: "
+                + _short_error(exc)
+            )
+        else:
+            direct_listing = normalize_public_listing(
+                {**direct_listing_raw, "asin": direct_listing_raw.get("asin") or own_asin},
+                source="amazon:directProductPage",
+                zipcode=zipcode,
+            )
+            listing = _merge_listing(listing, direct_listing)
+            if listing_missing_fields(listing):
+                context_failures.append(
+                    "Pangolin product detail missing fields; direct product page fallback incomplete: "
+                    + ", ".join(listing_missing_fields(listing))
+                )
     keyword_limit = max(int(max_keywords or 0), 0)
     keywords = [keyword.strip() for keyword in core_keywords if str(keyword).strip()][:keyword_limit]
     rank_rows: List[Dict[str, Any]] = []
