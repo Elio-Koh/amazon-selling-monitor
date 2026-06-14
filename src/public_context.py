@@ -203,6 +203,29 @@ def _element_text(html_text: str, element_id: str) -> Optional[str]:
     return re.sub(r"\s+", " ", html.unescape(text)).strip() or None
 
 
+def _element_attr(html_text: str, element_id: str, attr: str) -> Optional[str]:
+    match = re.search(
+        rf'<[^>]+id=["\']{re.escape(element_id)}["\'][^>]*\s{re.escape(attr)}=["\']([^"\']+)["\'][^>]*>',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    return re.sub(r"\s+", " ", html.unescape(match.group(1))).strip() or None
+
+
+def _class_text(html_text: str, class_name: str) -> Optional[str]:
+    match = re.search(
+        rf'<[^>]+class=["\'][^"\']*\b{re.escape(class_name)}\b[^"\']*["\'][^>]*>(.*?)</[^>]+>',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    text = re.sub(r"<[^>]+>", " ", match.group(1))
+    return re.sub(r"\s+", " ", html.unescape(text)).strip() or None
+
+
 def _json_ld_products(html_text: str) -> List[Mapping[str, Any]]:
     products: List[Mapping[str, Any]] = []
     for match in re.finditer(
@@ -250,7 +273,8 @@ def fetch_amazon_product_listing_from_url(url: str, *, asin: str, timeout: int =
     )
     with urllib.request.urlopen(request, timeout=max(int(timeout or 1), 1)) as response:
         html_text = response.read().decode("utf-8", errors="ignore")
-    product = _json_ld_products(html_text)[0] if _json_ld_products(html_text) else {}
+    products = _json_ld_products(html_text)
+    product = products[0] if products else {}
     offers = product.get("offers") if isinstance(product.get("offers"), Mapping) else {}
     aggregate_rating = product.get("aggregateRating") if isinstance(product.get("aggregateRating"), Mapping) else {}
     title = first_text(product.get("name")) or _meta_content(html_text, "og:title") or _element_text(html_text, "productTitle")
@@ -260,8 +284,11 @@ def fetch_amazon_product_listing_from_url(url: str, *, asin: str, timeout: int =
     listing = {
         "asin": asin.upper().strip(),
         "title": title,
-        "price": price or _element_text(html_text, "priceblock_ourprice") or _element_text(html_text, "priceblock_dealprice"),
-        "rating": first_text(aggregate_rating.get("ratingValue")) or _element_text(html_text, "acrPopover"),
+        "price": price
+        or _class_text(html_text, "a-offscreen")
+        or _element_text(html_text, "priceblock_ourprice")
+        or _element_text(html_text, "priceblock_dealprice"),
+        "rating": first_text(aggregate_rating.get("ratingValue")) or _element_attr(html_text, "acrPopover", "title") or _element_text(html_text, "acrPopover"),
         "review_count": first_text(aggregate_rating.get("reviewCount")) or _element_text(html_text, "acrCustomerReviewText"),
         "delivery": _element_text(html_text, "mir-layout-DELIVERY_BLOCK") or _element_text(html_text, "availability"),
         "fulfillment": _element_text(html_text, "merchant-info") or "Amazon/direct listing page",
@@ -439,6 +466,30 @@ def _url_with_page(url: str, page: int) -> str:
     return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
 
 
+def _asin_matches_from_rank_html(html_text: str) -> List[str]:
+    matches: List[str] = []
+
+    def add_from_text(text: str) -> None:
+        patterns = [
+            r'data-asin=["\']([A-Z0-9]{10})["\']',
+            r"/(?:dp|gp/product)/([A-Z0-9]{10})(?:[/?\"'&]|$)",
+            r'["\'](?:asin|id)["\']\s*:\s*["\']([A-Z0-9]{10})["\']',
+        ]
+        for pattern in patterns:
+            matches.extend(re.findall(pattern, text, flags=re.IGNORECASE))
+
+    add_from_text(html_text)
+    add_from_text(urllib.parse.unquote(html.unescape(html_text)))
+    for attr_match in re.finditer(
+        r'data-client-recs-list=["\']([^"\']+)["\']',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        decoded = urllib.parse.unquote(html.unescape(attr_match.group(1)))
+        add_from_text(decoded)
+    return [match.upper() for match in matches]
+
+
 def fetch_amazon_rank_rows_from_url(
     url: str,
     *,
@@ -474,9 +525,7 @@ def fetch_amazon_rank_rows_from_url(
         )
         with urllib.request.urlopen(request, timeout=base_timeout) as response:
             html = response.read().decode("utf-8", errors="ignore")
-        asin_matches = re.findall(r'data-asin=["\']([A-Z0-9]{10})["\']', html)
-        if not asin_matches:
-            asin_matches = re.findall(r"/(?:dp|gp/product)/([A-Z0-9]{10})(?:[/?\"'&]|$)", html)
+        asin_matches = _asin_matches_from_rank_html(html)
         for found_asin in asin_matches:
             normalized_asin = found_asin.upper()
             if normalized_asin in seen:

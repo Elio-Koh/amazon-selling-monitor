@@ -57,7 +57,17 @@ def test_snapshot_generator_failure_prints_safe_field_diagnostics(monkeypatch, t
                 "status": "partial",
                 "message": "Pangolin product detail missing fields; direct product page fallback failed.",
             },
-            "rank": {"bsr_capture_status": "measured"},
+            "rank": {
+                "bsr_capture_status": "measured",
+                "bsr_capture_attempts": [
+                    {
+                        "source": "amazon:directBestSellersUrl",
+                        "rank_level": "leaf",
+                        "bsr_capture_status": "not_in_leaf_bsr_window",
+                        "bsr_result_count": 48,
+                    }
+                ],
+            },
             "core_keywords": [],
             "market": {"selected_competitors": []},
         },
@@ -76,6 +86,7 @@ def test_snapshot_generator_failure_prints_safe_field_diagnostics(monkeypatch, t
     assert "listing_missing_fields=title, price_display" in captured.err
     assert "public_context_status=partial" in captured.err
     assert "bsr_capture_status=measured" in captured.err
+    assert "amazon:directBestSellersUrl:leaf:not_in_leaf_bsr_window:48" in captured.err
     assert "secret-token" not in captured.err
     assert "B0SECRET001" not in captured.err
 

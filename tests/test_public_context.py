@@ -260,6 +260,37 @@ def test_fetch_amazon_rank_rows_from_url_counts_second_page_rank(monkeypatch):
     assert rows[-1]["rank"] == 53
 
 
+def test_fetch_amazon_rank_rows_from_url_reads_encoded_recommendation_payload(monkeypatch):
+    html = (
+        '<div data-asin="B000000001"></div>'
+        '<div data-client-recs-list="%5B%7B%22id%22%3A%22B000000002%22%7D%2C%7B%22asin%22%3A%22B0TEST0001%22%7D%5D"></div>'
+    )
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return html.encode("utf-8")
+
+    monkeypatch.setattr(public_context.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+
+    rows = fetch_amazon_rank_rows_from_url(
+        "https://www.amazon.com/gp/bestsellers/home-garden/14042381/ref=pd_zg_hrsr_home-garden",
+        asin="B0TEST0001",
+        category_label="Milk Frothers",
+        source="amazon:directBestSellersUrl",
+        timeout=1,
+        max_pages=1,
+    )
+
+    assert [row["asin"] for row in rows] == ["B000000001", "B000000002", "B0TEST0001"]
+    assert rows[-1]["rank"] == 3
+
+
 def test_fetch_amazon_product_listing_from_url_extracts_required_fields(monkeypatch):
     html = """
     <html>
@@ -302,6 +333,45 @@ def test_fetch_amazon_product_listing_from_url_extracts_required_fields(monkeypa
     assert listing["review_count"] == "36"
     assert "Monday" in listing["delivery"]
     assert listing["fulfillment"] == "Ships from Amazon.com"
+
+
+def test_fetch_amazon_product_listing_from_url_reads_common_dom_selectors(monkeypatch):
+    html = """
+    <html>
+      <body>
+        <span id="productTitle">DOM Milk Frother</span>
+        <span class="a-price"><span class="a-offscreen">$39.99</span></span>
+        <span id="acrPopover" title="4.7 out of 5 stars"></span>
+        <span id="acrCustomerReviewText">42 ratings</span>
+        <div id="availability">In Stock</div>
+        <div id="merchant-info">Sold by Example and Fulfilled by Amazon</div>
+      </body>
+    </html>
+    """
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return html.encode("utf-8")
+
+    monkeypatch.setattr(public_context.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+
+    listing = fetch_amazon_product_listing_from_url(
+        "https://www.amazon.com/dp/B0TEST0001",
+        asin="B0TEST0001",
+        timeout=1,
+    )
+
+    assert listing["title"] == "DOM Milk Frother"
+    assert listing["price"] == "$39.99"
+    assert listing["rating"] == "4.7 out of 5 stars"
+    assert listing["review_count"] == "42 ratings"
+    assert listing["delivery"] == "In Stock"
 
 
 def test_normalize_public_listing_reads_delivery_promise_aliases():

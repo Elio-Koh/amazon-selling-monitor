@@ -108,7 +108,7 @@ def build_snapshot(*, targets: Mapping[str, Any], api_token: str) -> Dict[str, A
         "market_context": context,
         "warnings": context.get("public_context_status", {}).get("warnings") or [],
     }
-    return validate_market_context_snapshot(snapshot)
+    return snapshot
 
 
 def snapshot_diagnostics(snapshot: Mapping[str, Any]) -> str:
@@ -116,11 +116,27 @@ def snapshot_diagnostics(snapshot: Mapping[str, Any]) -> str:
     listing = context.get("public_listing") if isinstance(context.get("public_listing"), Mapping) else {}
     status = context.get("public_context_status") if isinstance(context.get("public_context_status"), Mapping) else {}
     rank = context.get("rank") if isinstance(context.get("rank"), Mapping) else {}
+
     def safe(value: Any) -> str:
         text = str(value or "")
         text = re.sub(r"https?://\S+", "[url-redacted]", text)
         text = re.sub(r"\bB0[A-Z0-9]{8}\b", "[asin-redacted]", text)
         return text
+
+    attempts = []
+    for attempt in rank.get("bsr_capture_attempts") or []:
+        if not isinstance(attempt, Mapping):
+            continue
+        attempts.append(
+            ":".join(
+                [
+                    safe(attempt.get("source") or "unknown"),
+                    safe(attempt.get("rank_level") or "unknown"),
+                    safe(attempt.get("bsr_capture_status") or "unknown"),
+                    safe(attempt.get("bsr_result_count") if attempt.get("bsr_result_count") is not None else ""),
+                ]
+            )
+        )
 
     pieces = [
         f"listing_source={safe(listing.get('source') or 'unknown')}",
@@ -128,6 +144,7 @@ def snapshot_diagnostics(snapshot: Mapping[str, Any]) -> str:
         f"public_context_status={safe(status.get('status') or 'unknown')}",
         f"public_context_message={safe(status.get('message') or '')}",
         f"bsr_capture_status={safe(rank.get('bsr_capture_status') or 'unknown')}",
+        f"bsr_capture_attempts={safe(', '.join(attempts) or 'none')}",
     ]
     return "; ".join(pieces)
 
@@ -156,6 +173,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     targets = targets_with_env_overrides(load_targets(args.targets))
     try:
         snapshot = build_snapshot(targets=targets, api_token=api_token)
+        snapshot = validate_market_context_snapshot(snapshot)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         if args.encrypt:
             payload = encrypt_snapshot(snapshot, key=str(encryption_key))
