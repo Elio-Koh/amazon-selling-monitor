@@ -282,3 +282,12 @@ def test_offer_value_formatting_uses_yes_no_and_none(monkeypatch):
     assert app.offer_value(False) == "No"
     assert app.offer_value(None) == "None"
     assert app.offer_value("") == "None"
+
+
+def test_source_health_label_marks_partial_live_data(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+
+    assert app.source_health_label({"mode": "live_api", "missing_fields": [], "warnings": []}) == "Healthy"
+    assert app.source_health_label({"mode": "live_api", "missing_fields": ["advertising.campaigns"], "warnings": []}) == "Partial"
+    assert app.source_health_label({"mode": "live_api", "missing_fields": [], "warnings": ["campaigns failed"]}) == "Degraded"
+    assert app.source_health_label({"mode": "fixture_no_live_url", "missing_fields": [], "warnings": []}) == "Sample data"

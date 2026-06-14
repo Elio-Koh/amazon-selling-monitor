@@ -571,6 +571,25 @@ def dashboard_with_stale_fallback(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+def source_health_label(status: Mapping[str, Any]) -> str:
+    mode = str(status.get("mode") or "")
+    missing = status.get("missing_fields") or []
+    warnings = status.get("warnings") or []
+    if status.get("stale"):
+        return "Stale fallback"
+    if status.get("blocked"):
+        return "Blocked"
+    if mode.startswith("fixture"):
+        return "Sample data"
+    if warnings:
+        return "Degraded"
+    if missing:
+        return "Partial"
+    if mode == "live_mcp":
+        return "MCP fallback"
+    return "Healthy"
+
+
 def render_source_status(data: Dict[str, Any], window: DateWindow) -> None:
     status = data["source_status"]
     mode = status["mode"]
@@ -587,16 +606,7 @@ def render_source_status(data: Dict[str, Any], window: DateWindow) -> None:
         source = "Sample fixture"
     else:
         source = mode
-    if status.get("stale"):
-        health = "Stale fallback"
-    elif status.get("blocked"):
-        health = "Blocked"
-    elif mode.startswith("fixture"):
-        health = "Sample data"
-    elif mode == "live_mcp":
-        health = "MCP fallback"
-    else:
-        health = "Healthy"
+    health = source_health_label(status)
     st.markdown(
         f"""
         <div class="health-grid">

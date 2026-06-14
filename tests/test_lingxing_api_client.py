@@ -67,6 +67,10 @@ def test_discover_child_asins_uses_auth_headers_and_parent_list_payload():
     assert [row["asin"] for row in children] == ["B0GXYYZPBW", "B0NEWCHILD"]
     path, payload, headers, timeout = calls[0]
     assert path == "/api/lingxing/asin-all-list"
+    assert payload["start_date"] == "2026-06-13"
+    assert payload["end_date"] == "2026-06-13"
+    assert "date_start" not in payload
+    assert "date_end" not in payload
     assert payload["asin_type"] == "parent_asin"
     assert payload["offset"] == 0
     assert payload["length"] >= 100
@@ -98,6 +102,9 @@ def test_fetch_dashboard_uses_asin_all_and_sales_fallback_without_orders_endpoin
                 },
             }
         if path == "/api/lingxing/asin-all" and payload["asin"] == "B0GXYYZPBW":
+            assert payload["date_start"] == "2026-06-13"
+            assert payload["date_end"] == "2026-06-13"
+            assert "date_range" not in payload
             return {
                 "success": True,
                 "data": {
@@ -117,10 +124,19 @@ def test_fetch_dashboard_uses_asin_all_and_sales_fallback_without_orders_endpoin
                 },
             }
         if path == "/api/lingxing/asin-all" and payload["asin"] == "B0NEWCHILD":
+            assert payload["date_start"] == "2026-06-13"
+            assert payload["date_end"] == "2026-06-13"
+            assert "date_range" not in payload
             return {"success": True, "data": {"list": []}}
         if path == "/api/lingxing/asin-sales" and payload["asin"] == "B0NEWCHILD":
+            assert payload["date_range"] == ["2026-06-13", "2026-06-13"]
+            assert "date_start" not in payload
+            assert "date_end" not in payload
             return {"success": True, "data": {"total_units": "5"}}
         if path == "/api/lingxing/campaigns":
+            assert payload["date_range"] == ["2026-06-13", "2026-06-13"]
+            assert "date_start" not in payload
+            assert "date_end" not in payload
             return {
                 "success": True,
                 "data": {
@@ -161,6 +177,65 @@ def test_fetch_dashboard_uses_asin_all_and_sales_fallback_without_orders_endpoin
     assert dashboard["advertising"]["all_ads"]["spend"] == 9.0
     assert not any(path == "/api/lingxing/orders" for path, _payload in calls)
     assert any("asin-all returned no detail for B0NEWCHILD" in warning for warning in dashboard["source_status"]["warnings"])
+
+
+def test_code_one_success_response_does_not_trigger_asin_all_fallback():
+    calls = []
+
+    def post_json(path, payload, headers, timeout):
+        calls.append((path, payload))
+        if path == "/api/lingxing/asin-all-list":
+            return {
+                "code": 1,
+                "message": "success",
+                "data": {
+                    "list": [
+                        {
+                            "parent_asin": "B0FPBGR1XZ",
+                            "child_asins": [{"asin": "B0GXYYZPBW"}],
+                        }
+                    ]
+                },
+            }
+        if path == "/api/lingxing/asin-all":
+            assert payload["date_start"] == "2026-06-13"
+            assert payload["date_end"] == "2026-06-13"
+            assert "date_range" not in payload
+            return {
+                "code": 1,
+                "message": "success",
+                "data": {
+                    "list": [
+                        {
+                            "asin": "B0GXYYZPBW",
+                            "parent_asin": "B0FPBGR1XZ",
+                            "amount": "1306.67",
+                            "order_items": "33",
+                            "volume": "33",
+                        }
+                    ]
+                },
+            }
+        if path == "/api/lingxing/campaigns":
+            return {"code": 1, "message": "success", "data": {"list": []}}
+        if path == "/api/lingxing/asin-sales":
+            raise AssertionError("asin-sales fallback should not be called for code=1 success")
+        raise AssertionError(f"unexpected call {path}")
+
+    client = LingxingAPIClient(make_config(), post_json=post_json)
+
+    dashboard = client.fetch_dashboard(
+        start_date="2026-06-13",
+        end_date="2026-06-13",
+        sp_campaign_ids=[],
+        known_non_sp_campaign_ids=[],
+    )
+
+    assert dashboard["sales"]["total_sales"] == 1306.67
+    assert dashboard["sales"]["total_orders"] == 33
+    assert dashboard["sales"]["total_units"] == 33
+    assert not any(path == "/api/lingxing/asin-sales" for path, _payload in calls)
+    assert not any("code=1" in warning for warning in dashboard["source_status"]["warnings"])
 
 
 def test_fetch_dashboard_pulls_child_details_in_parallel():
@@ -231,6 +306,7 @@ def test_asin_all_failure_falls_back_to_asin_sales_for_child_units():
         if path == "/api/lingxing/asin-all":
             raise LingxingAPIError("HTTP 504 from asin-all")
         if path == "/api/lingxing/asin-sales":
+            assert payload["date_range"] == ["2026-06-13", "2026-06-13"]
             return {"success": True, "data": {"total_units": "33"}}
         if path == "/api/lingxing/campaigns":
             return {"success": True, "data": {"list": []}}
@@ -248,3 +324,31 @@ def test_asin_all_failure_falls_back_to_asin_sales_for_child_units():
     assert dashboard["sales"]["total_units"] == 33
     assert dashboard["variations"][0]["units"] == 33
     assert any("asin-all failed for B0GXYYZPBW" in warning for warning in dashboard["source_status"]["warnings"])
+
+
+def test_api_warnings_do_not_embed_full_validation_json():
+    long_validation_error = (
+        'HTTP 422 from /api/lingxing/asin-all-list: {"detail":[{"type":"missing",'
+        '"loc":["body","start_date"],"msg":"Field required","input":{"date_start":"2026-06-13"}},'
+        '{"type":"missing","loc":["body","end_date"],"msg":"Field required"}]}'
+    )
+
+    def post_json(path, payload, headers, timeout):
+        if path in {"/api/lingxing/asin-all-list", "/api/lingxing/asin-all", "/api/lingxing/campaigns"}:
+            raise LingxingAPIError(long_validation_error)
+        if path == "/api/lingxing/asin-sales":
+            return {"success": True, "data": {"total_units": "1"}}
+        raise AssertionError(f"unexpected call {path}")
+
+    client = LingxingAPIClient(make_config(), post_json=post_json)
+
+    dashboard = client.fetch_dashboard(
+        start_date="2026-06-13",
+        end_date="2026-06-13",
+        sp_campaign_ids=[],
+        known_non_sp_campaign_ids=[],
+    )
+
+    warnings = dashboard["source_status"]["warnings"]
+    assert any("missing request fields: start_date, end_date" in warning for warning in warnings)
+    assert not any('{"detail"' in warning for warning in warnings)

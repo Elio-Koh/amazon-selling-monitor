@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 import urllib.error
 import urllib.request
@@ -95,8 +96,8 @@ class LingxingAPIClient:
 
     def discover_child_asins(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         payload = {
-            "date_start": start_date,
-            "date_end": end_date,
+            "start_date": start_date,
+            "end_date": end_date,
             "offset": 0,
             "length": 100,
             "asin_type": "parent_asin",
@@ -154,7 +155,9 @@ class LingxingAPIClient:
         try:
             children = self.discover_child_asins(start_date, end_date)
         except Exception as exc:
-            warnings.append(f"asin-all-list failed for parent {self.config.parent_asin}: {type(exc).__name__}: {exc}")
+            warnings.append(
+                f"asin-all-list failed for parent {self.config.parent_asin}: {_short_exception(exc)}"
+            )
             children = [
                 {
                     "asin": self.config.focus_asin,
@@ -179,7 +182,7 @@ class LingxingAPIClient:
                     child_results[asin] = variation
                     warnings.extend(child_warnings)
                 except Exception as exc:
-                    warnings.append(f"child pull failed for {asin}: {type(exc).__name__}: {exc}")
+                    warnings.append(f"child pull failed for {asin}: {_short_exception(exc)}")
                     child_results[asin] = _variation_from_meta(
                         {"asin": asin, "parent_asin": self.config.parent_asin},
                         status="failed",
@@ -188,7 +191,9 @@ class LingxingAPIClient:
                 campaigns = campaigns_future.result()
             except Exception as exc:
                 campaigns = []
-                warnings.append(f"campaigns failed for parent {self.config.parent_asin}: {type(exc).__name__}: {exc}")
+                warnings.append(
+                    f"campaigns failed for parent {self.config.parent_asin}: {_short_exception(exc)}"
+                )
 
         variations = [child_results[str(child["asin"])] for child in children if str(child.get("asin")) in child_results]
         listing = _select_listing_row(variations, self.config.focus_asin)
@@ -231,8 +236,7 @@ class LingxingAPIClient:
 
     def fetch_campaigns(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         payload = {
-            "date_start": start_date,
-            "date_end": end_date,
+            "date_range": [start_date, end_date],
             "parent_asin": [self.config.parent_asin],
             "page": 1,
             "length": 100,
@@ -259,12 +263,12 @@ class LingxingAPIClient:
                 return _variation_from_detail(merged, status="ok"), warnings
             warnings.append(f"asin-all returned no detail for {asin}; using asin-sales fallback.")
         except Exception as exc:
-            warnings.append(f"asin-all failed for {asin}: {type(exc).__name__}: {exc}; using asin-sales fallback.")
+            warnings.append(f"asin-all failed for {asin}: {_short_exception(exc)}; using asin-sales fallback.")
 
         try:
             units = self.fetch_child_units(asin, start_date, end_date)
         except Exception as exc:
-            warnings.append(f"asin-sales fallback failed for {asin}: {type(exc).__name__}: {exc}")
+            warnings.append(f"asin-sales fallback failed for {asin}: {_short_exception(exc)}")
             units = 0
         variation = _variation_from_meta(child, status="sales_fallback")
         variation["units"] = units
@@ -283,8 +287,7 @@ class LingxingAPIClient:
     def fetch_child_units(self, asin: str, start_date: str, end_date: str) -> int:
         payload = {
             "asin": asin,
-            "date_start": start_date,
-            "date_end": end_date,
+            "date_range": [start_date, end_date],
         }
         body = self._call("/api/lingxing/asin-sales", payload)
         if isinstance(body, Mapping):
@@ -311,7 +314,7 @@ class LingxingAPIClient:
                 text = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise LingxingAPIError(f"HTTP {exc.code} from {path}: {body[:500]}") from exc
+            raise LingxingAPIError(_summarize_http_error(path, exc.code, body)) from exc
         except (urllib.error.URLError, socket.timeout, TimeoutError) as exc:
             raise LingxingAPIError(f"Request failed for {path}: {exc}") from exc
         try:
@@ -328,12 +331,49 @@ def _unwrap_response(path: str, response: Any) -> Any:
         message = response.get("message") or response.get("msg") or response.get("error") or response
         raise LingxingAPIError(f"{path} returned success=false: {message}")
     code = response.get("code")
-    if code not in (None, 0, "0", 200, "200"):
+    message = str(response.get("message") or response.get("msg") or "").strip().lower()
+    if code in (1, "1") and (success is True or message in {"success", "ok"}):
+        pass
+    elif code not in (None, 0, "0", 200, "200"):
         message = response.get("message") or response.get("msg") or response.get("error") or response
         raise LingxingAPIError(f"{path} returned code={code}: {message}")
     if "data" in response:
         return response["data"]
     return response
+
+
+def _short_exception(exc: Exception) -> str:
+    text = str(exc)
+    if "HTTP 422" in text and "Field required" in text:
+        fields = _missing_fields_from_text(text)
+        if fields:
+            return "LingxingAPIError: HTTP 422 validation error; missing request fields: " + ", ".join(fields)
+    if len(text) > 220:
+        text = text[:217].rstrip() + "..."
+    return f"{type(exc).__name__}: {text}"
+
+
+def _summarize_http_error(path: str, code: int, body: str) -> str:
+    if code == 422:
+        fields = _missing_fields_from_text(body)
+        if fields:
+            return f"HTTP 422 from {path}: missing request fields: {', '.join(fields)}"
+        return f"HTTP 422 from {path}: validation error"
+    compact = " ".join(body.split())
+    if len(compact) > 220:
+        compact = compact[:217].rstrip() + "..."
+    return f"HTTP {code} from {path}: {compact}"
+
+
+def _missing_fields_from_text(text: str) -> List[str]:
+    fields = re.findall(r'"loc"\s*:\s*\[\s*"body"\s*,\s*"([^"]+)"\s*\]', text)
+    if not fields:
+        fields = re.findall(r"'loc'\s*:\s*\[\s*'body'\s*,\s*'([^']+)'\s*\]", text)
+    deduped: List[str] = []
+    for field in fields:
+        if field not in deduped:
+            deduped.append(field)
+    return deduped
 
 
 def _extract_rows(value: Any) -> List[Dict[str, Any]]:
