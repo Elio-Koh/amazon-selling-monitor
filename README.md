@@ -31,6 +31,9 @@ MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY = "same-secret-as-github-actions"
 LINGXING_MCP_URL = "https://your-lingxing-mcp.example/lingxing_config/"
 LINGXING_MCP_TRANSPORT = "streamable_http"
 MARKET_CONTEXT_SNAPSHOT_URL = "https://raw.githubusercontent.com/<owner>/<repo>/market-context-data/latest.enc.json"
+SUPPLY_PLAN_GOOGLE_SHEET_ID = "your-google-sheet-id"
+# or:
+SUPPLY_PLAN_GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/your-google-sheet-id/edit"
 ```
 
 数据源优先级是 Lingxing REST API -> Lingxing MCP -> fixture。REST API 会向每个请求统一发送 `X-USER-TOKEN`、`X-LINGXING-ACCOUNT` 和 `X-Profile-Id`，并用 `/api/lingxing/asin-all-list` 自动发现父 ASIN 下的子 ASIN，再用 `/api/lingxing/asin-all` 拉取子体销售、订单、销量、广告和库存。`/api/lingxing/asin-sales` 只作为单个子 ASIN 的轻量销量 fallback；`/api/lingxing/orders` 不作为主数据源，因为父 ASIN 口径可能返回 no store orders data。
@@ -78,6 +81,18 @@ curl -X POST \
 `GITHUB_DISPATCH_TOKEN` 需要具备触发 Actions/workflow dispatch 的权限，只保存在腾讯云环境变量或服务器 secret 中，不写入 repo。
 
 `PANGOLINFO_API_TOKEN` 用于 GitHub Actions 生成 public context：Listing 前台 offer、delivery promise、核心关键词 SERP、竞品选择与排名上下文。不要把真实 token 或真实目标配置写入 Git；只放在 Streamlit Cloud Secrets 或 GitHub Secrets。更新 secrets 或拉取新 commit 后，从 Streamlit Cloud 的 Manage app 重启应用，并点击页面里的 `Refresh Data` 清理缓存。
+
+## Supply Inputs
+
+AMZ-20 的销售计划、采购/备货、FBA 发货、物流周期和库存输入通过运行时数据源接入，不把真实 Google Sheet ID 或真实业务表格内容提交到仓库。
+
+支持三种输入方式：
+
+- 在 Streamlit Secrets 配置 `SUPPLY_PLAN_GOOGLE_SHEET_ID` 或 `SUPPLY_PLAN_GOOGLE_SHEET_URL`，页面会按固定页签读取 `销售计划`、`备货相关`、`建单发货`、`物流周期`。
+- 在页面的 `Supply Inputs` 区域临时粘贴 Google Sheet ID/URL，用于当前运行环境调试。
+- 上传 CSV 覆盖对应页签：`销售计划 CSV`、`采购/备货 CSV`、`FBA 发货 CSV`、`物流周期 CSV`、`库存 CSV`。
+
+本地可用 `data/fixtures/supply_inputs/` 下的占位 CSV 测试上传链路。库存风险优先使用上传的库存 CSV；没有上传时使用 Lingxing dashboard 返回的 `fba_fulfillable`。缺货风险阈值为：少于 14 天 `critical`，少于 30 天 `high`，少于 45 天 `medium`，否则 `low`。
 
 实时 MCP 模式需要 Python 3.10+ 才会安装 `mcp>=1.9`。本仓库的 `runtime.txt` 已配置 `python-3.11.9`；如果本地旧 `.venv` 是 Python 3.8，只能跑普通单元测试，不能跑 live MCP 拉数。
 

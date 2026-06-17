@@ -21,6 +21,7 @@ from src import lingxing_api_client
 from src import lingxing_client
 from src import metrics
 from src import public_context
+from src import supply_inputs
 from src.config import load_targets
 from src.date_windows import PRESETS, DateWindow, resolve_date_window, today_for_timezone
 from src.market_context_snapshot import apply_snapshot_to_dashboard, load_encrypted_snapshot_from_url
@@ -460,6 +461,144 @@ def load_dashboard_data(
     return dashboard
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_google_sheet_operations_cached(
+    force_refresh_key: int,
+    sheet_source: str,
+    asin: str,
+    fba_fulfillable: Optional[float],
+    anchor_date_iso: str,
+) -> Dict[str, Any]:
+    del force_refresh_key
+    return supply_inputs.load_google_sheet_operations(
+        sheet_source,
+        anchor_date=date.fromisoformat(anchor_date_iso),
+        asin=asin,
+        dashboard_inventory={"fba_fulfillable": fba_fulfillable},
+    )
+
+
+def attach_operations_context(data: Dict[str, Any], operations: Mapping[str, Any]) -> Dict[str, Any]:
+    result = copy.deepcopy(data)
+    result.setdefault("context", {})["operations"] = copy.deepcopy(dict(operations))
+    return result
+
+
+def render_supply_input_controls(targets: Mapping[str, Any]) -> Dict[str, Any]:
+    secret_source = (
+        secrets_get("SUPPLY_PLAN_GOOGLE_SHEET_ID")
+        or secrets_get("SUPPLY_PLAN_GOOGLE_SHEET_URL")
+        or targets.get("supply_plan_google_sheet_id")
+        or targets.get("supply_plan_google_sheet_url")
+    )
+    controls: Dict[str, Any] = {"sheet_source": str(secret_source or "").strip(), "uploads": {}}
+    with st.expander("Supply Inputs", expanded=False):
+        if secret_source:
+            st.caption("Supply Google Sheet is configured at runtime. The sheet ID is not stored in this repository.")
+        manual_source = st.text_input(
+            "Google Sheet ID or URL override",
+            value="",
+            placeholder="Paste a Google Sheet ID or URL for sales plan, procurement, FBA shipments, and logistics cycle.",
+        )
+        if manual_source.strip():
+            controls["sheet_source"] = manual_source.strip()
+        st.caption("Optional CSV uploads override the matching Google Sheet tab for this browser session.")
+        upload_cols = st.columns(5)
+        controls["uploads"] = {
+            "sales_plan": upload_cols[0].file_uploader("销售计划 CSV", type=["csv"], key="supply_sales_plan_csv"),
+            "procurement": upload_cols[1].file_uploader("采购/备货 CSV", type=["csv"], key="supply_procurement_csv"),
+            "fba_shipments": upload_cols[2].file_uploader("FBA 发货 CSV", type=["csv"], key="supply_fba_shipments_csv"),
+            "logistics_cycle": upload_cols[3].file_uploader("物流周期 CSV", type=["csv"], key="supply_logistics_cycle_csv"),
+            "inventory": upload_cols[4].file_uploader("库存 CSV", type=["csv"], key="supply_inventory_csv"),
+        }
+    return controls
+
+
+def load_supply_operations(
+    controls: Mapping[str, Any],
+    data: Mapping[str, Any],
+    targets: Mapping[str, Any],
+    *,
+    anchor_date: date,
+) -> Dict[str, Any]:
+    context = data.get("context") if isinstance(data.get("context"), Mapping) else {}
+    dashboard_inventory = context.get("inventory") if isinstance(context.get("inventory"), Mapping) else {}
+    asin = str(data.get("selected_child_asin") or data.get("asin") or targets.get("asin") or lingxing_client.DEFAULT_ASIN)
+    sheet_source = str(controls.get("sheet_source") or "").strip()
+    uploads = controls.get("uploads") if isinstance(controls.get("uploads"), Mapping) else {}
+    warnings = []
+    source = "not_configured"
+
+    sales_plan: Mapping[str, Any] = {}
+    procurement: Mapping[str, Any] = {}
+    fba_shipments: Mapping[str, Any] = {}
+    logistics_cycle: Mapping[str, Any] = {}
+    inventory_override: Mapping[str, Any] = {}
+
+    if sheet_source:
+        try:
+            operations = load_google_sheet_operations_cached(
+                int(st.session_state.get("refresh_counter", 0)),
+                sheet_source,
+                asin,
+                _safe_float(dashboard_inventory.get("fba_fulfillable")) if dashboard_inventory.get("fba_fulfillable") is not None else None,
+                anchor_date.isoformat(),
+            )
+            sales_plan = operations.get("sales_plan") if isinstance(operations.get("sales_plan"), Mapping) else {}
+            procurement = operations.get("procurement") if isinstance(operations.get("procurement"), Mapping) else {}
+            fba_shipments = operations.get("fba_shipments") if isinstance(operations.get("fba_shipments"), Mapping) else {}
+            logistics_cycle = operations.get("logistics_cycle") if isinstance(operations.get("logistics_cycle"), Mapping) else {}
+            source = "google_sheet"
+            warnings.extend(operations.get("source_status", {}).get("warnings") or [])
+        except Exception as exc:
+            source = "supply_input_error"
+            warnings.append(f"Supply Google Sheet pull failed: {type(exc).__name__}: {exc}")
+
+    upload_texts = {key: _uploaded_csv_text(value) for key, value in uploads.items()}
+    uploaded_any = any(upload_texts.values())
+    if upload_texts.get("sales_plan"):
+        sales_plan = supply_inputs.parse_sales_plan_csv(upload_texts["sales_plan"], anchor_date=anchor_date)
+    if upload_texts.get("procurement"):
+        procurement = supply_inputs.parse_procurement_csv(upload_texts["procurement"], reference_year=anchor_date.year)
+    if upload_texts.get("fba_shipments"):
+        fba_shipments = supply_inputs.parse_fba_shipments_csv(upload_texts["fba_shipments"], asin=asin, reference_year=anchor_date.year)
+    if upload_texts.get("logistics_cycle"):
+        logistics_cycle = supply_inputs.parse_logistics_cycle_csv(upload_texts["logistics_cycle"])
+    if upload_texts.get("inventory"):
+        inventory_override = supply_inputs.parse_inventory_csv(upload_texts["inventory"], asin=asin)
+    if uploaded_any:
+        source = "manual_upload" if source == "not_configured" else f"{source}_with_upload_overrides"
+    if source == "not_configured":
+        warnings.append("Supply inputs are not configured. Add a runtime Google Sheet source or upload CSV files.")
+
+    return supply_inputs.build_operations_snapshot(
+        sales_plan=sales_plan,
+        procurement=procurement,
+        fba_shipments=fba_shipments,
+        logistics_cycle=logistics_cycle,
+        inventory=inventory_override,
+        dashboard_inventory=dashboard_inventory,
+        anchor_date=anchor_date,
+        source=source,
+        warnings=warnings,
+    )
+
+
+def _uploaded_csv_text(uploaded: Any) -> str:
+    if uploaded in (None, ""):
+        return ""
+    try:
+        raw = uploaded.getvalue()
+    except AttributeError:
+        try:
+            raw = uploaded.read()
+        except AttributeError:
+            raw = uploaded
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8-sig")
+    return str(raw or "")
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_market_context(
     force_refresh_key: int,
@@ -822,6 +961,9 @@ def render_header(targets: Mapping[str, Any]) -> DateWindow:
     if cols[3].button("Refresh Data", use_container_width=True):
         st.session_state.refresh_counter = st.session_state.get("refresh_counter", 0) + 1
         load_dashboard_data.clear()
+        supply_clear = getattr(load_google_sheet_operations_cached, "clear", None)
+        if callable(supply_clear):
+            supply_clear()
 
     selected_start = _as_date(custom_start)
     selected_end = _as_date(custom_end)
@@ -946,8 +1088,48 @@ def render_metric_row(summary: Dict[str, Any], currency: str) -> None:
     cols[5].metric("All-Ads TACOS", percent(all_ads["tacos"]))
 
 
+def risk_label(level: Any) -> str:
+    return {
+        "critical": "Critical",
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low",
+        "unknown": "Unknown",
+    }.get(str(level or "unknown"), str(level or "Unknown"))
+
+
+def render_stockout_risk_summary(operations: Mapping[str, Any]) -> None:
+    risk = operations.get("stockout_risk") if isinstance(operations.get("stockout_risk"), Mapping) else {}
+    inventory = operations.get("inventory") if isinstance(operations.get("inventory"), Mapping) else {}
+    sales_plan = operations.get("sales_plan") if isinstance(operations.get("sales_plan"), Mapping) else {}
+    level = str(risk.get("level") or "unknown")
+    message = safe_text(risk.get("reason"), "Supply inputs are not configured.")
+    if level == "critical":
+        st.error(f"Stockout risk: {risk_label(level)}. {message}")
+    elif level in {"high", "medium"}:
+        st.warning(f"Stockout risk: {risk_label(level)}. {message}")
+    elif level == "low":
+        st.success(f"Stockout risk: {risk_label(level)}. {message}")
+    else:
+        st.info(f"Stockout risk: {risk_label(level)}. {message}")
+
+    cols = st.columns(4)
+    coverage = risk.get("coverage_days")
+    cols[0].metric("Stockout Risk", risk_label(level))
+    cols[1].metric("Coverage Days", "-" if coverage is None else f"{float(coverage):.1f}")
+    cols[2].metric("Projected Stockout", safe_text(risk.get("projected_stockout_date")))
+    cols[3].metric(
+        "Planned Daily Units",
+        "-" if sales_plan.get("planned_daily_units") is None else f"{float(sales_plan['planned_daily_units']):.1f}",
+        f"Inventory {number(inventory.get('fba_fulfillable'))}",
+    )
+
+
 def render_overview(data: Dict[str, Any], summary: Dict[str, Any], currency: str, window: DateWindow) -> None:
     render_metric_row(summary, currency)
+    operations = data.get("context", {}).get("operations", {})
+    if isinstance(operations, Mapping):
+        render_stockout_risk_summary(operations)
     st.divider()
 
     sp_goal = summary["sp_goal"]
@@ -992,6 +1174,82 @@ def render_overview(data: Dict[str, Any], summary: Dict[str, Any], currency: str
                 "Rating": safe_text(listing.get("rating")),
             }
         )
+
+
+def render_operations(data: Dict[str, Any]) -> None:
+    operations = data.get("context", {}).get("operations", {})
+    if not isinstance(operations, Mapping) or not operations:
+        st.info("Supply inputs are not available for this dashboard snapshot.")
+        return
+
+    status = operations.get("source_status") if isinstance(operations.get("source_status"), Mapping) else {}
+    risk = operations.get("stockout_risk") if isinstance(operations.get("stockout_risk"), Mapping) else {}
+    inventory = operations.get("inventory") if isinstance(operations.get("inventory"), Mapping) else {}
+    sales_plan = operations.get("sales_plan") if isinstance(operations.get("sales_plan"), Mapping) else {}
+    procurement = operations.get("procurement") if isinstance(operations.get("procurement"), Mapping) else {}
+    shipments = operations.get("fba_shipments") if isinstance(operations.get("fba_shipments"), Mapping) else {}
+    logistics_cycle = operations.get("logistics_cycle") if isinstance(operations.get("logistics_cycle"), Mapping) else {}
+
+    st.subheader("Stockout Risk")
+    render_key_values(
+        {
+            "Risk Level": risk_label(risk.get("level")),
+            "Coverage Days": risk.get("coverage_days"),
+            "Projected Stockout": safe_text(risk.get("projected_stockout_date")),
+            "FBA Fulfillable": number(inventory.get("fba_fulfillable")),
+            "Inventory Source": safe_text(inventory.get("source")),
+            "Reason": safe_text(risk.get("reason")),
+            "Data Gaps": ", ".join(str(item) for item in risk.get("data_gaps", []) or []) or "None",
+        }
+    )
+
+    cols = st.columns(3)
+    with cols[0]:
+        st.subheader("Sales Plan")
+        render_key_values(
+            {
+                "Updated At": safe_text(sales_plan.get("updated_at")),
+                "Current Month Target": number(sales_plan.get("current_month_target_units")),
+                "Planned Daily Units": safe_text(sales_plan.get("planned_daily_units")),
+            }
+        )
+        st.dataframe(_sales_plan_table(sales_plan), use_container_width=True, hide_index=True)
+
+    with cols[1]:
+        st.subheader("Procurement")
+        render_key_values(
+            {
+                "Lead Time Days": number(procurement.get("lead_time_days")),
+                "Unit Cost USD": money(procurement.get("unit_cost_usd"), "$"),
+                "Purchase Total Units": number(procurement.get("purchase_total_units")),
+                "Shipped Total Units": number(procurement.get("shipped_total_units")),
+                "Unshipped Units": number(procurement.get("unshipped_units")),
+            }
+        )
+
+    with cols[2]:
+        st.subheader("FBA Shipments")
+        render_key_values(
+            {
+                "Total Units": number(shipments.get("total_units")),
+                "Delivered Units": number(shipments.get("delivered_units")),
+                "Open Units": number(shipments.get("open_units")),
+                "Rows": number(len(shipments.get("rows", []) or [])),
+            }
+        )
+
+    st.subheader("Procurement Rows")
+    st.dataframe(_procurement_table(procurement.get("rows", []) or []), use_container_width=True, hide_index=True)
+    st.subheader("FBA Shipment Rows")
+    st.dataframe(_shipment_table(shipments.get("rows", []) or []), use_container_width=True, hide_index=True)
+    st.subheader("Logistics Cycle")
+    st.dataframe(_logistics_cycle_table(logistics_cycle.get("rows", []) or []), use_container_width=True, hide_index=True)
+
+    warnings = status.get("warnings") or []
+    if warnings:
+        with st.expander("Supply source notes", expanded=False):
+            for warning in warnings:
+                st.write(f"- {warning}")
 
 
 def render_variations(data: Dict[str, Any], currency: str) -> None:
@@ -1111,6 +1369,68 @@ def _campaign_table(campaigns: Iterable[Mapping[str, Any]]) -> list[dict[str, An
             }
         )
     return rows
+
+
+def _sales_plan_table(sales_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+    monthly_units = sales_plan.get("monthly_units") if isinstance(sales_plan.get("monthly_units"), Mapping) else {}
+    return [
+        {
+            "Month": int(month),
+            "Target Units": units,
+        }
+        for month, units in sorted(monthly_units.items(), key=lambda item: int(item[0]))
+    ]
+
+
+def _procurement_table(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for row in rows:
+        out.append(
+            {
+                "Purchase Date": row.get("purchase_date"),
+                "Planned Units": row.get("planned_units"),
+                "Delivery Status": row.get("delivery_status"),
+                "Delivery Date": row.get("delivery_date"),
+                "Delivery Units": row.get("delivery_units"),
+                "Shipment Status": row.get("shipment_status"),
+            }
+        )
+    return out
+
+
+def _shipment_table(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for row in rows:
+        out.append(
+            {
+                "Arranged Date": row.get("arranged_date"),
+                "SKU": row.get("sku"),
+                "ASIN": row.get("asin"),
+                "Units": row.get("line_units"),
+                "Shipment ID": row.get("shipment_id"),
+                "Reference ID": row.get("reference_id"),
+                "Ship To": row.get("ship_to"),
+                "Carrier": row.get("carrier"),
+                "Planned Delivery": row.get("planned_delivery_raw"),
+                "Actual Delivery": row.get("actual_delivery_raw"),
+                "Status": row.get("status"),
+            }
+        )
+    return out
+
+
+def _logistics_cycle_table(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for row in rows:
+        out.append(
+            {
+                "Method": row.get("method"),
+                "Min Days": row.get("min_days"),
+                "Max Days": row.get("max_days"),
+                "Raw Lead Time": row.get("raw_lead_time"),
+            }
+        )
+    return out
 
 
 def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str) -> None:
@@ -1354,6 +1674,7 @@ def main() -> None:
         st.session_state.refresh_counter = 0
 
     window = render_header(targets)
+    supply_controls = render_supply_input_controls(targets)
     with st.spinner("Refreshing sales, ads, listing, and variation data..."):
         data = load_dashboard_data(
             st.session_state.refresh_counter,
@@ -1363,6 +1684,13 @@ def main() -> None:
             tuple(str(item) for item in targets.get("known_non_sp_campaign_ids", []) or []),
         )
     data = dashboard_with_stale_fallback(data)
+    operations = load_supply_operations(
+        supply_controls,
+        data,
+        targets,
+        anchor_date=date.fromisoformat(window.end_date),
+    )
+    data = attach_operations_context(data, operations)
 
     render_source_status(data, window)
     currency = "$" if data["sales"].get("currency", "USD") == "USD" else ""
@@ -1375,7 +1703,7 @@ def main() -> None:
         window_days=window.days,
     )
 
-    tabs = st.tabs(["Overview", "Variations", "SP Performance", "All Ads", "Market Context", "Diagnostics"])
+    tabs = st.tabs(["Overview", "Variations", "SP Performance", "All Ads", "Operations", "Market Context", "Diagnostics"])
     with tabs[0]:
         render_overview(data, summary, currency, window)
     with tabs[1]:
@@ -1385,8 +1713,10 @@ def main() -> None:
     with tabs[3]:
         render_all_ads(data, summary, currency)
     with tabs[4]:
-        render_market_context_tab(data, summary, currency, targets)
+        render_operations(data)
     with tabs[5]:
+        render_market_context_tab(data, summary, currency, targets)
+    with tabs[6]:
         render_details(data)
 
 

@@ -1,4 +1,5 @@
 import importlib
+import importlib.util
 import sys
 import types
 
@@ -95,8 +96,37 @@ class FreshPublicContext(types.SimpleNamespace):
 
 def import_app_with_fake_streamlit(monkeypatch):
     monkeypatch.setitem(sys.modules, "streamlit", FakeStreamlit())
+    install_fake_cryptography_if_missing(monkeypatch)
     sys.modules.pop("app", None)
     return importlib.import_module("app")
+
+
+def install_fake_cryptography_if_missing(monkeypatch):
+    if importlib.util.find_spec("cryptography") is not None:
+        return
+
+    class FakeAESGCM:
+        def __init__(self, key):
+            self.key = key
+
+        def encrypt(self, nonce, data, associated_data):
+            return data
+
+        def decrypt(self, nonce, data, associated_data):
+            return data
+
+    cryptography_module = types.ModuleType("cryptography")
+    hazmat_module = types.ModuleType("cryptography.hazmat")
+    primitives_module = types.ModuleType("cryptography.hazmat.primitives")
+    ciphers_module = types.ModuleType("cryptography.hazmat.primitives.ciphers")
+    aead_module = types.ModuleType("cryptography.hazmat.primitives.ciphers.aead")
+    aead_module.AESGCM = FakeAESGCM
+
+    monkeypatch.setitem(sys.modules, "cryptography", cryptography_module)
+    monkeypatch.setitem(sys.modules, "cryptography.hazmat", hazmat_module)
+    monkeypatch.setitem(sys.modules, "cryptography.hazmat.primitives", primitives_module)
+    monkeypatch.setitem(sys.modules, "cryptography.hazmat.primitives.ciphers", ciphers_module)
+    monkeypatch.setitem(sys.modules, "cryptography.hazmat.primitives.ciphers.aead", aead_module)
 
 
 def test_create_lingxing_client_reloads_when_transport_keyword_hits_stale_class(monkeypatch):
@@ -269,6 +299,20 @@ def test_own_ranking_values_hide_empty_new_release_major_rows(monkeypatch):
     assert "New Release Major Category" not in values
     assert values["New Release Leaf Category Rank"] == "4"
     assert values["New Release Leaf Category"] == "Milk Frothers"
+
+
+def test_attach_operations_context_copies_supply_snapshot(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    data = {"context": {"inventory": {"fba_fulfillable": 120}}, "source_status": {"warnings": []}}
+    operations = {
+        "sales_plan": {"planned_daily_units": 100},
+        "stockout_risk": {"level": "high", "coverage_days": 25.0},
+    }
+
+    result = app.attach_operations_context(data, operations)
+
+    assert result["context"]["operations"] == operations
+    assert data["context"].get("operations") is None
 
 
 def test_date_inputs_for_yesterday_show_resolved_window(monkeypatch):
