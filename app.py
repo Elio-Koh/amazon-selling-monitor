@@ -111,7 +111,10 @@ def lingxing_api_secret_values(targets: Mapping[str, Any]) -> Dict[str, Any]:
         "LINGXING_ACCOUNT": secrets_get("LINGXING_ACCOUNT"),
         "LINGXING_PROFILE_ID": secrets_get("LINGXING_PROFILE_ID"),
         "LINGXING_USER_TOKEN": secrets_get("LINGXING_USER_TOKEN"),
-        "LINGXING_API_TIMEOUT_SECONDS": secrets_get("LINGXING_API_TIMEOUT_SECONDS", 8),
+        "LINGXING_API_TIMEOUT_SECONDS": secrets_get(
+            "LINGXING_API_TIMEOUT_SECONDS",
+            lingxing_api_client.DEFAULT_TIMEOUT,
+        ),
     }
 
 
@@ -997,7 +1000,12 @@ def dashboard_with_stale_fallback(data: Dict[str, Any]) -> Dict[str, Any]:
         )
         stale_status.setdefault("warnings", []).extend(status.get("warnings") or [])
         return stale
-    if not status.get("blocked") and not str(status.get("mode", "")).startswith("fixture"):
+    if (
+        not status.get("blocked")
+        and not str(status.get("mode", "")).startswith("fixture")
+        and not status.get("warnings")
+        and not status.get("missing_fields")
+    ):
         st.session_state.last_successful_dashboard = copy.deepcopy(data)
     return data
 

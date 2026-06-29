@@ -16,7 +16,7 @@ from .lingxing_client import DEFAULT_ASIN, as_float, as_int, first_present, norm
 
 
 DEFAULT_API_BASE_URL = "http://203.0.113.10:8367"
-DEFAULT_TIMEOUT = 8.0
+DEFAULT_TIMEOUT = 30.0
 
 
 class LingxingAPIError(RuntimeError):
@@ -201,6 +201,12 @@ class LingxingAPIClient:
         sales_total = round(sum(float(row.get("sales") or 0) for row in variations), 4)
         orders_total = int(sum(float(row.get("orders") or 0) for row in variations))
         units_total = int(sum(float(row.get("units") or 0) for row in variations))
+        if not _has_usable_dashboard_data(variations, campaigns, sales_total, orders_total, units_total):
+            detail = "; ".join(warnings) if warnings else "empty Lingxing response"
+            raise LingxingAPIError(
+                f"Lingxing REST API returned no usable dashboard data for "
+                f"{self.config.parent_asin}/{self.config.focus_asin}: {detail}"
+            )
 
         payload = {
             "asin": self.config.focus_asin,
@@ -390,6 +396,23 @@ def _extract_rows(value: Any) -> List[Dict[str, Any]]:
             if nested:
                 return nested
     return []
+
+
+def _has_usable_dashboard_data(
+    variations: Iterable[Mapping[str, Any]],
+    campaigns: Iterable[Mapping[str, Any]],
+    sales_total: float,
+    orders_total: int,
+    units_total: int,
+) -> bool:
+    rows = list(variations)
+    return (
+        bool(list(campaigns))
+        or sales_total > 0
+        or orders_total > 0
+        or units_total > 0
+        or any(row.get("status") == "ok" for row in rows)
+    )
 
 
 def _dedupe_children(children: Iterable[Mapping[str, Any]], focus_asin: str) -> List[Dict[str, Any]]:

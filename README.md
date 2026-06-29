@@ -22,6 +22,7 @@ LINGXING_API_BASE_URL = "https://your-lingxing-api.example"
 LINGXING_ACCOUNT = "your-lingxing-account"
 LINGXING_PROFILE_ID = "your-profile-id"
 LINGXING_USER_TOKEN = "paste-x-user-token-in-streamlit-secrets-only"
+LINGXING_API_TIMEOUT_SECONDS = 30
 MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY = "same-secret-as-github-actions"
 ```
 
@@ -36,7 +37,7 @@ SUPPLY_PLAN_GOOGLE_SHEET_ID = "your-google-sheet-id"
 SUPPLY_PLAN_GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/your-google-sheet-id/edit"
 ```
 
-数据源优先级是 Lingxing REST API -> Lingxing MCP -> fixture。REST API 会向每个请求统一发送 `X-USER-TOKEN`、`X-LINGXING-ACCOUNT` 和 `X-Profile-Id`，并用 `/api/lingxing/asin-all-list` 自动发现父 ASIN 下的子 ASIN，再用 `/api/lingxing/asin-all` 拉取子体销售、订单、销量、广告和库存。`/api/lingxing/asin-sales` 只作为单个子 ASIN 的轻量销量 fallback；`/api/lingxing/orders` 不作为主数据源，因为父 ASIN 口径可能返回 no store orders data。
+数据源优先级是 Lingxing REST API -> Lingxing MCP -> fixture。REST API 会向每个请求统一发送 `X-USER-TOKEN`、`X-LINGXING-ACCOUNT` 和 `X-Profile-Id`，并用 `/api/lingxing/asin-all-list` 自动发现父 ASIN 下的子 ASIN，再用 `/api/lingxing/asin-all` 拉取子体销售、订单、销量、广告和库存。`/api/lingxing/asin-sales` 只作为单个子 ASIN 的轻量销量 fallback；`/api/lingxing/orders` 不作为主数据源，因为父 ASIN 口径可能返回 no store orders data。`LINGXING_API_TIMEOUT_SECONDS` 默认 30 秒；如果三个主数据端点都超时或只返回空数据，页面会走 MCP、stale 或 blocked fallback，不展示假 0 数据。
 
 `LINGXING_MCP_URL` 是备用项，必须是 Streamlit Cloud 可以直接访问并完成 MCP 会话的端点。当前 Lingxing FastMCP 服务使用 Streamable HTTP，建议把 `LINGXING_MCP_TRANSPORT` 显式设为 `streamable_http`；不配置时应用会先尝试 Streamable HTTP，再回退到 SSE。Codex 本地配置里的 MCP config URL 不一定等同于公开可用的 MCP endpoint；如果 REST 和 MCP 都失败，页面会显示“实时数据源不可用”。如果当前刷新失败但本 session 已经有过成功数据，页面会保留上一份成功快照并标记 stale。
 

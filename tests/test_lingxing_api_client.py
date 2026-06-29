@@ -40,6 +40,21 @@ def test_config_from_mapping_requires_user_token():
     assert "Streamlit secrets" in str(exc.value)
 
 
+def test_config_from_mapping_defaults_api_timeout_to_30_seconds():
+    config = LingxingAPIConfig.from_mapping(
+        {
+            "LINGXING_API_BASE_URL": "http://203.0.113.10:8367",
+            "LINGXING_ACCOUNT": "ExampleAccount",
+            "LINGXING_PROFILE_ID": "0000000000000000",
+            "LINGXING_USER_TOKEN": "token-123",
+            "LINGXING_PARENT_ASIN": "B0PARENT01",
+            "ASIN": "B0TEST0001",
+        }
+    )
+
+    assert config.timeout == 30.0
+
+
 def test_discover_child_asins_uses_auth_headers_and_parent_list_payload():
     calls = []
 
@@ -333,6 +348,56 @@ def test_asin_all_failure_falls_back_to_asin_sales_for_child_units():
     assert dashboard["sales"]["total_units"] == 33
     assert dashboard["variations"][0]["units"] == 33
     assert any("asin-all failed for B0TEST0001" in warning for warning in dashboard["source_status"]["warnings"])
+
+
+def test_fetch_dashboard_raises_when_all_primary_lingxing_pulls_fail_with_zero_data():
+    def post_json(path, payload, headers, timeout):
+        if path in {"/api/lingxing/asin-all-list", "/api/lingxing/asin-all", "/api/lingxing/campaigns"}:
+            raise LingxingAPIError(f"Request failed for {path}: timed out")
+        if path == "/api/lingxing/asin-sales":
+            return {"success": True, "data": {"total_units": "0"}}
+        raise AssertionError(f"unexpected call {path}")
+
+    client = LingxingAPIClient(make_config(), post_json=post_json)
+
+    with pytest.raises(LingxingAPIError) as exc:
+        client.fetch_dashboard(
+            start_date="2026-06-28",
+            end_date="2026-06-28",
+            sp_campaign_ids=[],
+            known_non_sp_campaign_ids=[],
+        )
+
+    message = str(exc.value)
+    assert "no usable dashboard data" in message
+    assert "asin-all-list failed" in message
+    assert "campaigns failed" in message
+
+
+def test_fetch_dashboard_keeps_nonzero_asin_sales_fallback_even_when_campaigns_fail():
+    def post_json(path, payload, headers, timeout):
+        if path == "/api/lingxing/asin-all-list":
+            raise LingxingAPIError("Request failed for /api/lingxing/asin-all-list: timed out")
+        if path == "/api/lingxing/asin-all":
+            raise LingxingAPIError("Request failed for /api/lingxing/asin-all: timed out")
+        if path == "/api/lingxing/asin-sales":
+            return {"success": True, "data": {"total_units": "33"}}
+        if path == "/api/lingxing/campaigns":
+            raise LingxingAPIError("Request failed for /api/lingxing/campaigns: timed out")
+        raise AssertionError(f"unexpected call {path}")
+
+    client = LingxingAPIClient(make_config(), post_json=post_json)
+
+    dashboard = client.fetch_dashboard(
+        start_date="2026-06-28",
+        end_date="2026-06-28",
+        sp_campaign_ids=[],
+        known_non_sp_campaign_ids=[],
+    )
+
+    assert dashboard["sales"]["total_units"] == 33
+    assert dashboard["source_status"]["missing_fields"] == ["advertising.campaigns"]
+    assert any("campaigns failed" in warning for warning in dashboard["source_status"]["warnings"])
 
 
 def test_api_warnings_do_not_embed_full_validation_json():

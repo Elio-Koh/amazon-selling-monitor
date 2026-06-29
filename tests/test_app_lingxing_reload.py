@@ -766,3 +766,25 @@ def test_source_health_label_marks_partial_live_data(monkeypatch):
     assert app.source_health_label({"mode": "live_api", "missing_fields": ["advertising.campaigns"], "warnings": []}) == "Partial"
     assert app.source_health_label({"mode": "live_api", "missing_fields": [], "warnings": ["campaigns failed"]}) == "Degraded"
     assert app.source_health_label({"mode": "fixture_no_live_url", "missing_fields": [], "warnings": []}) == "Sample data"
+
+
+def test_degraded_live_dashboard_does_not_replace_last_successful_snapshot(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    app.st.session_state = SessionState()
+    app.st.session_state["last_successful_dashboard"] = {
+        "sales": {"total_sales": 100},
+        "source_status": {"mode": "live_api", "missing_fields": [], "warnings": []},
+    }
+    degraded = {
+        "sales": {"total_sales": 0},
+        "source_status": {
+            "mode": "live_api",
+            "missing_fields": ["advertising.campaigns"],
+            "warnings": ["campaigns failed"],
+        },
+    }
+
+    result = app.dashboard_with_stale_fallback(degraded)
+
+    assert result is degraded
+    assert app.st.session_state["last_successful_dashboard"]["sales"]["total_sales"] == 100
