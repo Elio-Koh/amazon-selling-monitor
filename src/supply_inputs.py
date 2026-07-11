@@ -43,9 +43,51 @@ def parse_sales_plan_csv(csv_text: str, *, anchor_date: Optional[date] = None) -
     return {
         "updated_at": updated_at,
         "monthly_units": monthly_units,
+        "rows": [
+            {"month": month, "target_units": units}
+            for month, units in sorted(monthly_units.items())
+        ],
         "current_month_target_units": current_month_target,
         "planned_daily_units": planned_daily,
     }
+
+
+def build_sales_plan_progress(
+    sales_plan: Mapping[str, Any],
+    *,
+    actual_units_by_month: Optional[Mapping[int, Any]] = None,
+    anchor_date: Optional[date] = None,
+    actuals_source: str = "unavailable",
+) -> List[Dict[str, Any]]:
+    anchor = anchor_date or date.today()
+    actuals = {int(month): _as_int(units) for month, units in dict(actual_units_by_month or {}).items()}
+    monthly_units = sales_plan.get("monthly_units") if isinstance(sales_plan.get("monthly_units"), Mapping) else {}
+    rows: List[Dict[str, Any]] = []
+    for month_value, target_value in sorted(monthly_units.items(), key=lambda item: int(item[0])):
+        month = int(month_value)
+        target_units = _as_int(target_value)
+        actual_units = actuals.get(month)
+        time_progress = _month_time_progress(month, anchor)
+        completion_rate = None
+        pace_gap_units = None
+        status = "actual_unavailable"
+        if target_units not in (None, 0) and actual_units is not None:
+            completion_rate = round(actual_units / target_units, 4)
+            pace_gap_units = int(round(actual_units - (target_units * time_progress)))
+            status = "on_track" if completion_rate >= time_progress else "behind"
+        rows.append(
+            {
+                "month": month,
+                "target_units": target_units,
+                "actual_units": actual_units,
+                "completion_rate": completion_rate,
+                "time_progress": time_progress,
+                "pace_gap_units": pace_gap_units,
+                "status": status,
+                "actuals_source": actuals_source if actual_units is not None else "unavailable",
+            }
+        )
+    return rows
 
 
 def parse_procurement_csv(csv_text: str, *, reference_year: Optional[int] = None) -> Dict[str, Any]:
@@ -105,9 +147,10 @@ def parse_procurement_csv(csv_text: str, *, reference_year: Optional[int] = None
 
 def parse_fba_shipments_csv(csv_text: str, *, asin: Optional[str] = None, reference_year: Optional[int] = None) -> Dict[str, Any]:
     year = reference_year or date.today().year
-    rows = _dict_rows(csv_text)
+    rows = _shipment_dict_rows(csv_text)
     inherited: Dict[str, Any] = {}
     normalized_rows: List[Dict[str, Any]] = []
+    display_rows: List[Dict[str, Any]] = []
     for raw in rows:
         current = {
             "arranged_date_raw": _get(raw, "安排时间"),
@@ -140,6 +183,7 @@ def parse_fba_shipments_csv(csv_text: str, *, asin: Optional[str] = None, refere
         normalized_rows.append(
             {
                 "arranged_date": _parse_date(str(inherited.get("arranged_date_raw") or ""), year),
+                "arranged_date_raw": inherited.get("arranged_date_raw") or "",
                 "ship_date_raw": inherited.get("ship_date_raw") or "",
                 "approval_id": inherited.get("approval_id") or "",
                 "origin": inherited.get("origin") or "",
@@ -161,6 +205,7 @@ def parse_fba_shipments_csv(csv_text: str, *, asin: Optional[str] = None, refere
                 "status": status,
             }
         )
+        display_rows.append(_shipment_display_row(normalized_rows[-1]))
 
     total_units = sum(int(row.get("line_units") or 0) for row in normalized_rows)
     delivered_units = sum(int(row.get("line_units") or 0) for row in normalized_rows if row.get("status") == "delivered")
@@ -169,6 +214,7 @@ def parse_fba_shipments_csv(csv_text: str, *, asin: Optional[str] = None, refere
         "delivered_units": delivered_units,
         "open_units": total_units - delivered_units,
         "rows": normalized_rows,
+        "display_rows": display_rows,
     }
 
 
@@ -277,6 +323,8 @@ def build_operations_snapshot(
     anchor_date: Optional[date] = None,
     source: str = "manual",
     warnings: Optional[Iterable[str]] = None,
+    actual_units_by_month: Optional[Mapping[int, Any]] = None,
+    actuals_source: str = "unavailable",
 ) -> Dict[str, Any]:
     inventory = dict(inventory or {})
     dashboard_inventory = dict(dashboard_inventory or {})
@@ -286,6 +334,16 @@ def build_operations_snapshot(
         inventory_units = dashboard_inventory.get("fba_fulfillable")
         inventory_source = "lingxing_dashboard"
     plan = dict(sales_plan or {})
+    plan.setdefault(
+        "progress_rows",
+        build_sales_plan_progress(
+            plan,
+            actual_units_by_month=actual_units_by_month,
+            anchor_date=anchor_date,
+            actuals_source=actuals_source,
+        ),
+    )
+    plan.setdefault("actuals_source", actuals_source if actual_units_by_month else "unavailable")
     return {
         "source_status": {
             "mode": source,
@@ -380,6 +438,74 @@ def _empty_shipments() -> Dict[str, Any]:
         "delivered_units": 0,
         "open_units": 0,
         "rows": [],
+        "display_rows": [],
+    }
+
+
+def _month_time_progress(month: int, anchor: date) -> float:
+    if month < anchor.month:
+        return 1.0
+    if month > anchor.month:
+        return 0.0
+    days_in_month = calendar.monthrange(anchor.year, anchor.month)[1]
+    return round(anchor.day / days_in_month, 4)
+
+
+def _shipment_dict_rows(csv_text: str) -> List[Dict[str, str]]:
+    rows = _nonempty_rows(csv_text)
+    if not rows:
+        return []
+    if rows[0] and _parse_date(rows[0][0], date.today().year):
+        return [_headerless_shipment_row(row) for row in rows]
+    return _dict_rows(csv_text)
+
+
+def _headerless_shipment_row(row: List[str]) -> Dict[str, str]:
+    return {
+        "安排时间": _cell(row, 0),
+        "出货时间": _cell(row, 1),
+        "飞书审批单号": _cell(row, 2),
+        "发货地": _cell(row, 3),
+        "收货地": _cell(row, 4),
+        "（M）SKU": _cell(row, 5),
+        "ASIN": _cell(row, 6),
+        "产品标": _cell(row, 7),
+        "发货总数": _cell(row, 8),
+        "件数": _cell(row, 9),
+        "Box": _cell(row, 10),
+        "装箱数": _cell(row, 11),
+        "Shipment ID": _cell(row, 12),
+        "Refernce ID": _cell(row, 13),
+        "Ship to": _cell(row, 14),
+        "运输方式": _cell(row, 15),
+        "填写送达日期": _cell(row, 16),
+        "实际送达": _cell(row, 18),
+        "后台跟踪号": _cell(row, 19),
+    }
+
+
+def _shipment_display_row(row: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "Arranged Date": row.get("arranged_date_raw") or row.get("arranged_date"),
+        "Ship Date": row.get("ship_date_raw"),
+        "Approval ID": row.get("approval_id"),
+        "Origin": row.get("origin"),
+        "Destination": row.get("destination"),
+        "SKU": row.get("sku"),
+        "ASIN": row.get("asin"),
+        "Product Label": row.get("product_label"),
+        "Group Total Units": row.get("group_total_units"),
+        "Units": row.get("line_units"),
+        "Cartons": row.get("cartons"),
+        "Units Per Carton": row.get("units_per_carton"),
+        "Shipment ID": row.get("shipment_id"),
+        "Reference ID": row.get("reference_id"),
+        "Ship To": row.get("ship_to"),
+        "Carrier": row.get("carrier"),
+        "Planned Delivery": row.get("planned_delivery_raw"),
+        "Actual Delivery": row.get("actual_delivery_raw"),
+        "Tracking Number": row.get("tracking_number"),
+        "Status": row.get("status"),
     }
 
 

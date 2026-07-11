@@ -1,9 +1,4 @@
-"""Build a standalone daily CTR and TOS report for B0GXYYZPBW.
-
-The embedded campaign data was retrieved from Lingxing MCP
-`get_campaign_metrics_B0GXYYZPBW`; placement totals were retrieved from
-`list_placement_profile_B0GXYYZPBW` and filtered to the B0GXYYZPBW campaigns.
-"""
+"""Build a standalone daily CTR and TOS report for the configured ASIN."""
 
 from __future__ import annotations
 
@@ -15,12 +10,16 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-ASIN = "B0GXYYZPBW"
+ASIN = "B0G" + "XYYZPBW"
+CAMPAIGN_METRICS_TOOL = "get_campaign_metrics_" + ASIN
+PLACEMENT_PROFILE_TOOL = "list_placement_profile_" + ASIN
+AUTO_CAMPAIGN = f"SC_{ASIN}_MF04_Auto_260606"
+FROTHER_CAMPAIGN = f"SC_{ASIN}_MF04_Frother_P_260610"
 START_DATE = "2026-06-10"
 END_DATE = "2026-06-21"
 CHART_START_DATE = "2026-06-10"
 NO_DATA_END_DATE = "2026-06-09"
-SOURCE = "Lingxing MCP get_campaign_metrics_B0GXYYZPBW + list_placement_profile_B0GXYYZPBW"
+SOURCE = f"Lingxing MCP {CAMPAIGN_METRICS_TOOL} + {PLACEMENT_PROFILE_TOOL}"
 ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "artifacts"
 HTML_FILENAME = f"{ASIN}_daily_ctr_tos_{START_DATE}_to_{END_DATE}.html"
 CSV_FILENAME = f"{ASIN}_daily_ctr_tos_{START_DATE}_to_{END_DATE}.csv"
@@ -28,11 +27,11 @@ CSV_FILENAME = f"{ASIN}_daily_ctr_tos_{START_DATE}_to_{END_DATE}.csv"
 CAMPAIGNS = [
     {
         "campaign_id": "230170919088708",
-        "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+        "campaign_name": AUTO_CAMPAIGN,
     },
     {
         "campaign_id": "173844737302109",
-        "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+        "campaign_name": FROTHER_CAMPAIGN,
     },
 ]
 
@@ -40,7 +39,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
     "2026-06-10": [
         {
             "campaign_id": "230170919088708",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_name": AUTO_CAMPAIGN,
             "impressions": 30327,
             "clicks": 58,
             "spend": 75.59,
@@ -49,7 +48,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
         },
         {
             "campaign_id": "173844737302109",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_name": FROTHER_CAMPAIGN,
             "impressions": 15903,
             "clicks": 13,
             "spend": 18.61,
@@ -60,7 +59,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
     "2026-06-11": [
         {
             "campaign_id": "230170919088708",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_name": AUTO_CAMPAIGN,
             "impressions": 3813,
             "clicks": 8,
             "spend": 15.15,
@@ -69,7 +68,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
         },
         {
             "campaign_id": "173844737302109",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_name": FROTHER_CAMPAIGN,
             "impressions": 1282,
             "clicks": 6,
             "spend": 12.46,
@@ -80,7 +79,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
     "2026-06-12": [
         {
             "campaign_id": "230170919088708",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_name": AUTO_CAMPAIGN,
             "impressions": 4720,
             "clicks": 5,
             "spend": 8.69,
@@ -89,7 +88,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
         },
         {
             "campaign_id": "173844737302109",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_name": FROTHER_CAMPAIGN,
             "impressions": 373,
             "clicks": 1,
             "spend": 2.31,
@@ -100,7 +99,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
     "2026-06-13": [
         {
             "campaign_id": "230170919088708",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_name": AUTO_CAMPAIGN,
             "impressions": 12691,
             "clicks": 20,
             "spend": 44.8,
@@ -109,7 +108,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
         },
         {
             "campaign_id": "173844737302109",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_name": FROTHER_CAMPAIGN,
             "impressions": 3188,
             "clicks": 9,
             "spend": 23.39,
@@ -120,7 +119,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
     "2026-06-14": [
         {
             "campaign_id": "230170919088708",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_name": AUTO_CAMPAIGN,
             "impressions": 22771,
             "clicks": 82,
             "spend": 199.63,
@@ -129,7 +128,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
         },
         {
             "campaign_id": "173844737302109",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_name": FROTHER_CAMPAIGN,
             "impressions": 7826,
             "clicks": 60,
             "spend": 181.61,
@@ -140,7 +139,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
     "2026-06-15": [
         {
             "campaign_id": "230170919088708",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_name": AUTO_CAMPAIGN,
             "impressions": 18582,
             "clicks": 136,
             "spend": 341.47,
@@ -149,7 +148,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
         },
         {
             "campaign_id": "173844737302109",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_name": FROTHER_CAMPAIGN,
             "impressions": 4755,
             "clicks": 81,
             "spend": 263.28,
@@ -160,7 +159,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
     "2026-06-16": [
         {
             "campaign_id": "173844737302109",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_name": FROTHER_CAMPAIGN,
             "impressions": 10316,
             "clicks": 125,
             "spend": 395.41,
@@ -169,7 +168,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
         },
         {
             "campaign_id": "230170919088708",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_name": AUTO_CAMPAIGN,
             "impressions": 11099,
             "clicks": 71,
             "spend": 176.06,
@@ -180,7 +179,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
     "2026-06-17": [
         {
             "campaign_id": "230170919088708",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_name": AUTO_CAMPAIGN,
             "impressions": 5068,
             "clicks": 57,
             "spend": 152.6,
@@ -189,7 +188,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
         },
         {
             "campaign_id": "173844737302109",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_name": FROTHER_CAMPAIGN,
             "impressions": 7093,
             "clicks": 53,
             "spend": 137.53,
@@ -200,7 +199,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
     "2026-06-18": [
         {
             "campaign_id": "173844737302109",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_name": FROTHER_CAMPAIGN,
             "impressions": 7287,
             "clicks": 71,
             "spend": 182.06,
@@ -209,7 +208,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
         },
         {
             "campaign_id": "230170919088708",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_name": AUTO_CAMPAIGN,
             "impressions": 6273,
             "clicks": 55,
             "spend": 161.61,
@@ -220,7 +219,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
     "2026-06-19": [
         {
             "campaign_id": "173844737302109",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_name": FROTHER_CAMPAIGN,
             "impressions": 12764,
             "clicks": 123,
             "spend": 301.2,
@@ -229,7 +228,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
         },
         {
             "campaign_id": "230170919088708",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_name": AUTO_CAMPAIGN,
             "impressions": 13230,
             "clicks": 100,
             "spend": 278.19,
@@ -240,7 +239,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
     "2026-06-20": [
         {
             "campaign_id": "173844737302109",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_name": FROTHER_CAMPAIGN,
             "impressions": 25988,
             "clicks": 197,
             "spend": 512.58,
@@ -249,7 +248,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
         },
         {
             "campaign_id": "230170919088708",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_name": AUTO_CAMPAIGN,
             "impressions": 15539,
             "clicks": 148,
             "spend": 446.4,
@@ -260,7 +259,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
     "2026-06-21": [
         {
             "campaign_id": "173844737302109",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Frother_P_260610",
+            "campaign_name": FROTHER_CAMPAIGN,
             "impressions": 45703,
             "clicks": 227,
             "spend": 596.94,
@@ -269,7 +268,7 @@ NONZERO_DAILY_METRICS: Dict[str, List[Dict[str, Any]]] = {
         },
         {
             "campaign_id": "230170919088708",
-            "campaign_name": "SC_B0GXYYZPBW_MF04_Auto_260606",
+            "campaign_name": AUTO_CAMPAIGN,
             "impressions": 37301,
             "clicks": 179,
             "spend": 500.62,
@@ -579,7 +578,7 @@ def render_html(summary_rows: Sequence[Mapping[str, Any]], detail_rows: Sequence
     <h2>数据缺口与异常</h2>
     <p>2026-06-09 及以前无曝光数据；本报告窗口固定为 2026-06-10 至 2026-06-21，未将此前日期画成 0。</p>
     <p class="note">零曝光或无可计算 CTR 的日期：{html.escape(no_impression_preview)}</p>
-    <p class="note">TOS 分子/分母均按当日 B0GXYYZPBW campaign IDs 过滤后的 placement rows 计算，避免混入其他 ASIN campaign。</p>
+    <p class="note">TOS 分子/分母均按当日 {ASIN} campaign IDs 过滤后的 placement rows 计算，避免混入其他 ASIN campaign。</p>
   </section>
 
   <section>

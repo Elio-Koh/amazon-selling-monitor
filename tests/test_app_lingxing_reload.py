@@ -38,6 +38,14 @@ class SessionState(dict):
         self[name] = value
 
 
+class FakeContext:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+
 class OldLingxingClient:
     def __init__(self, server_url, asin):
         self.server_url = server_url
@@ -313,6 +321,156 @@ def test_attach_operations_context_copies_supply_snapshot(monkeypatch):
 
     assert result["context"]["operations"] == operations
     assert data["context"].get("operations") is None
+
+
+def test_main_renames_operations_tab_to_business_context(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    app.st.session_state = SessionState()
+    tab_labels = []
+
+    data = {
+        "sales": {"total_sales": 0, "total_orders": 0, "total_units": 0, "currency": "USD"},
+        "advertising": {"sp": {}, "all_ads": {}, "by_product": {}},
+        "context": {"inventory": {}, "listing": {}},
+        "source_status": {"warnings": []},
+    }
+
+    monkeypatch.setattr(app, "ensure_runtime_compatibility", lambda: None)
+    monkeypatch.setattr(app, "load_targets", lambda: {"asin": "B0TEST0001", "marketplace": "US"})
+    monkeypatch.setattr(app, "render_header", lambda targets: app.DateWindow("Yesterday", "2026-07-10", "2026-07-10", "Yesterday", 1))
+    monkeypatch.setattr(app, "render_supply_input_controls", lambda targets: {"sheet_source": "", "uploads": {}})
+    monkeypatch.setattr(app, "load_dashboard_data", lambda *args, **kwargs: data)
+    monkeypatch.setattr(app, "dashboard_with_stale_fallback", lambda payload: payload)
+    monkeypatch.setattr(app, "load_supply_operations", lambda *args, **kwargs: {"sales_plan": {}, "stockout_risk": {}, "inventory": {}})
+    monkeypatch.setattr(app, "attach_operations_context", lambda payload, operations: {**payload, "context": {**payload["context"], "operations": operations}})
+    monkeypatch.setattr(app, "build_summary_with_reload", lambda **kwargs: {"sales": {}, "sp_goal": {}, "advertising": {"sp": {}, "all_ads": {}, "by_product": {}}})
+    monkeypatch.setattr(app, "render_source_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_overview", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_variations", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_sp_ads", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_all_ads", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_business_context", lambda *args, **kwargs: None, raising=False)
+    monkeypatch.setattr(app, "render_market_context_tab", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_details", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "spinner", lambda *args, **kwargs: FakeContext())
+
+    def fake_tabs(labels):
+        tab_labels.extend(labels)
+        return [FakeContext() for _label in labels]
+
+    monkeypatch.setattr(app.st, "tabs", fake_tabs)
+
+    app.main()
+
+    assert "Business Context" in tab_labels
+    assert "Operations" not in tab_labels
+
+
+def test_overview_inventory_listing_uses_operations_risk_and_public_listing(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    rendered = []
+    data = {
+        "parent_asin": "B0PARENT01",
+        "selected_child_asin": "B0TEST0001",
+        "asin": "B0TEST0001",
+        "sales": {"total_units": 200},
+        "sales_family": {"child_count": 1, "active_child_count": 1},
+        "context": {
+            "inventory": {"fba_fulfillable": 11789, "stockout_risk": "unknown"},
+            "operations": {
+                "inventory": {"fba_fulfillable": 11789, "source": "lingxing_dashboard"},
+                "stockout_risk": {
+                    "level": "low",
+                    "coverage_days": 73.1,
+                    "projected_stockout_date": "2026-09-21",
+                },
+            },
+            "listing": {"price_display": "$29.99"},
+            "public_listing": {
+                "price_display": "$26.99",
+                "rating": 4.8,
+                "review_count": "42 ratings",
+                "fulfillment_method": "FBA",
+                "delivery_promise": "Jul 15",
+            },
+        },
+    }
+    summary = {
+        "sp_goal": {"orders_progress_max": 0.5, "orders_status": "in_range", "budget_used_pct": 0.2, "acos_delta": 0.01},
+        "advertising": {"all_ads": {"tacos": 0.1024}},
+    }
+
+    monkeypatch.setattr(app, "render_metric_row", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_stockout_risk_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "divider", lambda: None)
+    monkeypatch.setattr(app.st, "columns", lambda count: [FakeContext() for _ in range(count)])
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "progress", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_key_values", lambda values: rendered.append(values))
+
+    app.render_overview(
+        data,
+        summary,
+        "$",
+        app.DateWindow("Yesterday", "2026-07-10", "2026-07-10", "Yesterday", 1),
+    )
+
+    inventory_values = rendered[2]
+    assert inventory_values["FBA Fulfillable"] == "11,789"
+    assert inventory_values["Coverage Days"] == "73.1"
+    assert inventory_values["Projected Stockout"] == "2026-09-21"
+    assert inventory_values["Stockout Risk"] == "Low"
+    assert inventory_values["Inventory Source"] == "lingxing_dashboard"
+    assert inventory_values["Price"] == "$26.99"
+    assert inventory_values["Rating"] == "4.8"
+    assert inventory_values["Reviews"] == "42"
+    assert inventory_values["Fulfillment"] == "FBA"
+    assert inventory_values["Delivery Promise"] == "Jul 15"
+
+
+def test_market_context_removes_business_blocks_and_explains_missing_competitors(monkeypatch):
+    app = import_app_with_fake_streamlit(monkeypatch)
+    subheaders = []
+    captions = []
+    data = {
+        "source_status": {"mode": "live_api", "missing_fields": [], "warnings": []},
+        "pulled_at": "2026-07-11T00:00:00Z",
+        "context": {
+            "listing": {"title": "Sample"},
+            "inventory": {},
+            "rank": {},
+            "market": {},
+            "core_keywords": [],
+            "public_context_status": {
+                "status": "missing_token",
+                "message": "PANGOLINFO_API_TOKEN is not configured.",
+                "source": "pangolin",
+            },
+        },
+        "sales": {"total_sales": 100, "total_orders": 5, "total_units": 6},
+    }
+    summary = {
+        "sp_goal": {"target_acos": 0.4993},
+        "advertising": {"sp": {"acos": 0.5}, "all_ads": {"spend": 20, "tacos": 0.2, "order_share": 0.3}},
+    }
+
+    monkeypatch.setattr(app.st, "subheader", lambda text: subheaders.append(text))
+    monkeypatch.setattr(app.st, "caption", lambda text: captions.append(text))
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "dataframe", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "columns", lambda count: [FakeContext() for _ in range(count)])
+    monkeypatch.setattr(app, "render_key_values", lambda *args, **kwargs: None)
+
+    app.render_context(data, summary, "$")
+
+    assert "Business & Profit" not in subheaders
+    assert "Inventory & Logistics" not in subheaders
+    assert "Listing & Offer" not in subheaders
+    assert "Sales Trend" not in subheaders
+    assert "Core Keywords" in subheaders
+    assert "Market & Competitors" in subheaders
+    assert any("PANGOLINFO_API_TOKEN is not configured" in caption for caption in captions)
 
 
 def test_date_inputs_for_yesterday_show_resolved_window(monkeypatch):

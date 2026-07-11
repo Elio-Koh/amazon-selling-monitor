@@ -53,6 +53,14 @@ def money(value: Any, currency: str = "$") -> str:
 def number(value: Any) -> str:
     if value is None:
         return "-"
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return "-"
+        match = re.search(r"[-+]?[0-9][0-9,]*(?:\.[0-9]+)?", text)
+        if not match:
+            return text
+        value = match.group(0).replace(",", "")
     if isinstance(value, float) and value.is_integer():
         return f"{value:,.0f}"
     if isinstance(value, float):
@@ -481,6 +489,43 @@ def load_google_sheet_operations_cached(
     )
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def load_monthly_sales_actuals_cached(
+    force_refresh_key: int,
+    months: tuple[int, ...],
+    anchor_date_iso: str,
+    sp_campaign_ids: tuple[str, ...] = (),
+    known_non_sp_campaign_ids: tuple[str, ...] = (),
+) -> Dict[str, Any]:
+    anchor = date.fromisoformat(anchor_date_iso)
+    actuals: Dict[int, int] = {}
+    warnings = []
+    for month in months:
+        if month > anchor.month:
+            continue
+        start = date(anchor.year, month, 1)
+        if month == anchor.month:
+            end = anchor
+        else:
+            import calendar
+
+            end = date(anchor.year, month, calendar.monthrange(anchor.year, month)[1])
+        dashboard = load_dashboard_data(
+            force_refresh_key,
+            start.isoformat(),
+            end.isoformat(),
+            sp_campaign_ids,
+            known_non_sp_campaign_ids,
+        )
+        source_status = dashboard.get("source_status") if isinstance(dashboard.get("source_status"), Mapping) else {}
+        mode = str(source_status.get("mode") or "")
+        if source_status.get("blocked") or mode.startswith("fixture"):
+            warnings.append(f"Lingxing monthly actuals unavailable for {anchor.year}-{month:02d}: source mode {mode or 'unknown'}.")
+            continue
+        actuals[month] = int(float(dashboard.get("sales", {}).get("total_units") or 0))
+    return {"actuals": actuals, "warnings": warnings}
+
+
 def attach_operations_context(data: Dict[str, Any], operations: Mapping[str, Any]) -> Dict[str, Any]:
     result = copy.deepcopy(data)
     result.setdefault("context", {})["operations"] = copy.deepcopy(dict(operations))
@@ -574,6 +619,30 @@ def load_supply_operations(
     if source == "not_configured":
         warnings.append("Supply inputs are not configured. Add a runtime Google Sheet source or upload CSV files.")
 
+    monthly_actuals: Mapping[int, Any] = {}
+    actuals_source = "unavailable"
+    monthly_units = sales_plan.get("monthly_units") if isinstance(sales_plan.get("monthly_units"), Mapping) else {}
+    months = tuple(sorted(int(month) for month in monthly_units if int(month) <= anchor_date.month))
+    api_values = lingxing_api_secret_values(targets)
+    can_pull_lingxing = has_lingxing_api_config(api_values) or bool(secrets_get("LINGXING_MCP_URL"))
+    if months and can_pull_lingxing:
+        try:
+            actual_result = load_monthly_sales_actuals_cached(
+                int(st.session_state.get("refresh_counter", 0)),
+                months,
+                anchor_date.isoformat(),
+                tuple(str(item) for item in targets.get("sp_campaign_ids", []) or []),
+                tuple(str(item) for item in targets.get("known_non_sp_campaign_ids", []) or []),
+            )
+            monthly_actuals = actual_result.get("actuals") if isinstance(actual_result.get("actuals"), Mapping) else {}
+            warnings.extend(actual_result.get("warnings") or [])
+            if monthly_actuals:
+                actuals_source = "lingxing_store_sales_units"
+        except Exception as exc:
+            warnings.append(f"Lingxing monthly sales actuals failed: {type(exc).__name__}: {exc}")
+    elif months:
+        warnings.append("Lingxing monthly sales actuals are unavailable because live Lingxing config is not set.")
+
     return supply_inputs.build_operations_snapshot(
         sales_plan=sales_plan,
         procurement=procurement,
@@ -584,6 +653,8 @@ def load_supply_operations(
         anchor_date=anchor_date,
         source=source,
         warnings=warnings,
+        actual_units_by_month=monthly_actuals,
+        actuals_source=actuals_source,
     )
 
 
@@ -1106,6 +1177,15 @@ def risk_label(level: Any) -> str:
     }.get(str(level or "unknown"), str(level or "Unknown"))
 
 
+def one_decimal(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value):.1f}"
+    except (TypeError, ValueError):
+        return safe_text(value)
+
+
 def render_stockout_risk_summary(operations: Mapping[str, Any]) -> None:
     risk = operations.get("stockout_risk") if isinstance(operations.get("stockout_risk"), Mapping) else {}
     inventory = operations.get("inventory") if isinstance(operations.get("inventory"), Mapping) else {}
@@ -1142,7 +1222,11 @@ def render_overview(data: Dict[str, Any], summary: Dict[str, Any], currency: str
 
     sp_goal = summary["sp_goal"]
     all_ads = summary["advertising"]["all_ads"]
-    inventory = data["context"]["inventory"]
+    context = data["context"]
+    inventory = context["inventory"]
+    operations = context.get("operations") if isinstance(context.get("operations"), Mapping) else {}
+    operations_inventory = operations.get("inventory") if isinstance(operations.get("inventory"), Mapping) else {}
+    risk = operations.get("stockout_risk") if isinstance(operations.get("stockout_risk"), Mapping) else {}
     listing = data["context"].get("public_listing") or data["context"]["listing"]
     family = data.get("sales_family") if isinstance(data.get("sales_family"), Mapping) else {}
 
@@ -1173,18 +1257,27 @@ def render_overview(data: Dict[str, Any], summary: Dict[str, Any], currency: str
 
     with cols[2]:
         st.subheader("Inventory & Listing")
+        fba_fulfillable = operations_inventory.get("fba_fulfillable")
+        if fba_fulfillable in (None, ""):
+            fba_fulfillable = inventory.get("fba_fulfillable")
+        stockout_level = risk.get("level") or inventory.get("stockout_risk")
         render_key_values(
             {
-                "FBA Fulfillable": number(inventory.get("fba_fulfillable")),
-                "Days of Supply": number(inventory.get("days_of_supply")),
-                "Stockout Risk": safe_text(inventory.get("stockout_risk")),
+                "FBA Fulfillable": number(fba_fulfillable),
+                "Coverage Days": one_decimal(risk.get("coverage_days") if risk else inventory.get("days_of_supply")),
+                "Projected Stockout": safe_text(risk.get("projected_stockout_date")),
+                "Stockout Risk": risk_label(stockout_level),
+                "Inventory Source": safe_text(operations_inventory.get("source")),
                 "Price": safe_text(listing.get("price_display") or listing.get("price")),
                 "Rating": safe_text(listing.get("rating")),
+                "Reviews": number(listing.get("review_count")),
+                "Fulfillment": safe_text(listing.get("fulfillment_method")),
+                "Delivery Promise": safe_text(listing.get("delivery_promise")),
             }
         )
 
 
-def render_operations(data: Dict[str, Any]) -> None:
+def render_business_context(data: Dict[str, Any]) -> None:
     operations = data.get("context", {}).get("operations", {})
     if not isinstance(operations, Mapping) or not operations:
         st.info("Supply inputs are not available for this dashboard snapshot.")
@@ -1198,33 +1291,45 @@ def render_operations(data: Dict[str, Any]) -> None:
     shipments = operations.get("fba_shipments") if isinstance(operations.get("fba_shipments"), Mapping) else {}
     logistics_cycle = operations.get("logistics_cycle") if isinstance(operations.get("logistics_cycle"), Mapping) else {}
 
-    st.subheader("Stockout Risk")
+    st.subheader("销售计划")
     render_key_values(
         {
-            "Risk Level": risk_label(risk.get("level")),
-            "Coverage Days": risk.get("coverage_days"),
-            "Projected Stockout": safe_text(risk.get("projected_stockout_date")),
-            "FBA Fulfillable": number(inventory.get("fba_fulfillable")),
+            "Updated At": safe_text(sales_plan.get("updated_at")),
+            "Current Month Target": number(sales_plan.get("current_month_target_units")),
+            "Planned Daily Units": safe_text(sales_plan.get("planned_daily_units")),
+            "Actuals Source": safe_text(sales_plan.get("actuals_source")),
+        }
+    )
+    st.dataframe(_sales_plan_progress_table(sales_plan), use_container_width=True, hide_index=True)
+
+    st.subheader("库存数据 - 在仓库存")
+    cols = st.columns(4)
+    with cols[0]:
+        st.metric("FBA Fulfillable", number(inventory.get("fba_fulfillable")))
+    with cols[1]:
+        st.metric("Coverage Days", one_decimal(risk.get("coverage_days")))
+    with cols[2]:
+        st.metric("Projected Stockout", safe_text(risk.get("projected_stockout_date")))
+    with cols[3]:
+        st.metric("Stockout Risk", risk_label(risk.get("level")))
+    render_key_values(
+        {
             "Inventory Source": safe_text(inventory.get("source")),
             "Reason": safe_text(risk.get("reason")),
             "Data Gaps": ", ".join(str(item) for item in risk.get("data_gaps", []) or []) or "None",
         }
     )
 
-    cols = st.columns(3)
-    with cols[0]:
-        st.subheader("Sales Plan")
-        render_key_values(
-            {
-                "Updated At": safe_text(sales_plan.get("updated_at")),
-                "Current Month Target": number(sales_plan.get("current_month_target_units")),
-                "Planned Daily Units": safe_text(sales_plan.get("planned_daily_units")),
-            }
-        )
-        st.dataframe(_sales_plan_table(sales_plan), use_container_width=True, hide_index=True)
+    st.subheader("库存数据 - 在途库存")
+    cols = st.columns(4)
+    cols[0].metric("Total Units", number(shipments.get("total_units")))
+    cols[1].metric("Delivered Units", number(shipments.get("delivered_units")))
+    cols[2].metric("Open Units", number(shipments.get("open_units")))
+    cols[3].metric("Rows", number(len(shipments.get("display_rows") or shipments.get("rows") or [])))
+    display_rows = shipments.get("display_rows") or _shipment_table(shipments.get("rows", []) or [])
+    st.dataframe(display_rows, use_container_width=True, hide_index=True)
 
-    with cols[1]:
-        st.subheader("Procurement")
+    with st.expander("采购/备货", expanded=False):
         render_key_values(
             {
                 "Lead Time Days": number(procurement.get("lead_time_days")),
@@ -1234,30 +1339,19 @@ def render_operations(data: Dict[str, Any]) -> None:
                 "Unshipped Units": number(procurement.get("unshipped_units")),
             }
         )
-
-    with cols[2]:
-        st.subheader("FBA Shipments")
-        render_key_values(
-            {
-                "Total Units": number(shipments.get("total_units")),
-                "Delivered Units": number(shipments.get("delivered_units")),
-                "Open Units": number(shipments.get("open_units")),
-                "Rows": number(len(shipments.get("rows", []) or [])),
-            }
-        )
-
-    st.subheader("Procurement Rows")
-    st.dataframe(_procurement_table(procurement.get("rows", []) or []), use_container_width=True, hide_index=True)
-    st.subheader("FBA Shipment Rows")
-    st.dataframe(_shipment_table(shipments.get("rows", []) or []), use_container_width=True, hide_index=True)
-    st.subheader("Logistics Cycle")
-    st.dataframe(_logistics_cycle_table(logistics_cycle.get("rows", []) or []), use_container_width=True, hide_index=True)
+        st.dataframe(_procurement_table(procurement.get("rows", []) or []), use_container_width=True, hide_index=True)
+    with st.expander("物流周期", expanded=False):
+        st.dataframe(_logistics_cycle_table(logistics_cycle.get("rows", []) or []), use_container_width=True, hide_index=True)
 
     warnings = status.get("warnings") or []
     if warnings:
         with st.expander("Supply source notes", expanded=False):
             for warning in warnings:
                 st.write(f"- {warning}")
+
+
+def render_operations(data: Dict[str, Any]) -> None:
+    render_business_context(data)
 
 
 def render_variations(data: Dict[str, Any], currency: str) -> None:
@@ -1390,6 +1484,27 @@ def _sales_plan_table(sales_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _sales_plan_progress_table(sales_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+    progress_rows = sales_plan.get("progress_rows") if isinstance(sales_plan.get("progress_rows"), list) else []
+    if not progress_rows:
+        return _sales_plan_table(sales_plan)
+    rows = []
+    for row in progress_rows:
+        rows.append(
+            {
+                "Month": row.get("month"),
+                "Target Units": row.get("target_units"),
+                "Actual Units": row.get("actual_units"),
+                "Completion": percent(row.get("completion_rate")) if row.get("completion_rate") is not None else "-",
+                "Time Progress": percent(row.get("time_progress")) if row.get("time_progress") is not None else "-",
+                "Pace Gap Units": row.get("pace_gap_units"),
+                "Status": row.get("status"),
+                "Actual Source": row.get("actuals_source"),
+            }
+        )
+    return rows
+
+
 def _procurement_table(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for row in rows:
@@ -1443,14 +1558,9 @@ def _logistics_cycle_table(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, 
 
 def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str) -> None:
     context = data["context"]
-    listing = context.get("public_listing") or context.get("listing", {})
-    inventory = context.get("inventory", {})
     market = context.get("market", {})
     rank = context.get("rank", {})
     core_keywords = context.get("core_keywords", [])
-    sales = data.get("sales", {})
-    all_ads = summary["advertising"]["all_ads"]
-    sp = summary["advertising"]["sp"]
 
     public_status = context.get("public_context_status") if isinstance(context.get("public_context_status"), Mapping) else {}
     public_status_name = public_status.get("status")
@@ -1475,66 +1585,6 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
             }
     )
 
-    cols = st.columns(2)
-    with cols[0]:
-        st.subheader("Business & Profit")
-        render_key_values(
-            {
-                "Average Selling Price": money(_safe_float(sales.get("total_sales")) / _safe_float(sales.get("total_orders")), currency)
-                if _safe_float(sales.get("total_orders")) else "-",
-                "Target ACOS": percent(summary["sp_goal"]["target_acos"]),
-                "SP ACOS": percent(sp["acos"]),
-                "Break-even ACOS": safe_text(context.get("business_financial", {}).get("break_even_acos")),
-                "Contribution Margin": safe_text(context.get("business_financial", {}).get("contribution_margin")),
-            }
-        )
-
-    with cols[1]:
-        st.subheader("Inventory & Logistics")
-        render_key_values(
-            {
-                "FBA Fulfillable": number(inventory.get("fba_fulfillable")),
-                "Days of Supply": number(inventory.get("days_of_supply")),
-                "Inbound Quantity": number(inventory.get("inbound_quantity")),
-                "Inbound ETA": safe_text(inventory.get("inbound_eta")),
-                "Stockout Risk": safe_text(inventory.get("stockout_risk")),
-                "Delivery Promise": safe_text(inventory.get("own_delivery_promise")),
-            }
-        )
-
-    cols = st.columns(2)
-    with cols[0]:
-        st.subheader("Listing & Offer")
-        render_key_values(
-            {
-                "Title": safe_text(listing.get("title")),
-                "Price": safe_text(listing.get("price_display") or listing.get("price")),
-                "List Price": offer_value(listing.get("list_price_display")),
-                "Coupon": offer_value(listing.get("coupon_present")),
-                "Discount / Price Reduction": offer_value(listing.get("discount_present")),
-                "Amazon Deal": offer_value(listing.get("deal_present")),
-                "Rating": safe_text(listing.get("rating")),
-                "Reviews": number(listing.get("review_count")),
-                "Fulfillment": safe_text(listing.get("fulfillment_method")),
-                "Delivery Promise": offer_value(listing.get("delivery_promise")),
-                "Source": offer_value(listing.get("source")),
-                "Freshness": offer_value(listing.get("freshness")),
-            }
-        )
-
-    with cols[1]:
-        st.subheader("Sales Trend")
-        render_key_values(
-            {
-                "Window Sales": money(sales.get("total_sales"), currency),
-                "Window Orders": number(sales.get("total_orders")),
-                "Window Units": number(sales.get("total_units")),
-                "All-Ads Spend": money(all_ads.get("spend"), currency),
-                "All-Ads TACOS": percent(all_ads.get("tacos")),
-                "Ad Order Share": percent(all_ads.get("order_share")),
-            }
-        )
-
     st.subheader("Own Ranking")
     render_key_values(own_ranking_values(rank))
 
@@ -1542,7 +1592,7 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
     if core_keywords:
         st.dataframe(_core_keyword_table(core_keywords), use_container_width=True, hide_index=True)
     else:
-        st.caption("Core keyword context is not available in the current pull.")
+        st.caption(market_context_missing_reason(context, "core keyword context"))
 
     st.subheader("Market & Competitors")
     selected_competitors = market.get("selected_competitors") if isinstance(market, Mapping) else []
@@ -1560,8 +1610,7 @@ def render_context(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
             }
         )
     else:
-        note = context.get("public_context_status", {}).get("message")
-        st.caption(note or "No selected competitor context is available. Connect Pangolin public context or configure core keywords.")
+        st.caption(market_context_missing_reason(context, "selected competitor context"))
 
 
 def render_key_values(values: Mapping[str, Any]) -> None:
@@ -1574,6 +1623,21 @@ def render_key_values(values: Mapping[str, Any]) -> None:
             "</div>"
         )
     st.markdown('<div class="kv-list">' + "".join(rows) + "</div>", unsafe_allow_html=True)
+
+
+def market_context_missing_reason(context: Mapping[str, Any], label: str) -> str:
+    public_status = context.get("public_context_status") if isinstance(context.get("public_context_status"), Mapping) else {}
+    message = safe_text(public_status.get("message"), "")
+    status = safe_text(public_status.get("status"), "unknown")
+    source = safe_text(public_status.get("source"), "unknown")
+    if message:
+        return f"{label} is unavailable: {message}"
+    if status in {"missing_token", "failed", "expired", "stale", "partial"}:
+        return f"{label} is unavailable because Market Context status is {status} from {source}."
+    return (
+        f"{label} is unavailable. Configure MARKET_CONTEXT_SNAPSHOT_URL with "
+        "MARKET_CONTEXT_SNAPSHOT_ENCRYPTION_KEY, or configure PANGOLINFO_API_TOKEN for live Pangolin context."
+    )
 
 
 def own_ranking_values(rank: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1711,7 +1775,7 @@ def main() -> None:
         window_days=window.days,
     )
 
-    tabs = st.tabs(["Overview", "Variations", "SP Performance", "All Ads", "Operations", "Market Context", "Diagnostics"])
+    tabs = st.tabs(["Overview", "Variations", "SP Performance", "All Ads", "Business Context", "Market Context", "Diagnostics"])
     with tabs[0]:
         render_overview(data, summary, currency, window)
     with tabs[1]:
@@ -1721,7 +1785,7 @@ def main() -> None:
     with tabs[3]:
         render_all_ads(data, summary, currency)
     with tabs[4]:
-        render_operations(data)
+        render_business_context(data)
     with tabs[5]:
         render_market_context_tab(data, summary, currency, targets)
     with tabs[6]:
