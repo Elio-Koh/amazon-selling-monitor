@@ -334,16 +334,18 @@ def build_operations_snapshot(
         inventory_units = dashboard_inventory.get("fba_fulfillable")
         inventory_source = "lingxing_dashboard"
     plan = dict(sales_plan or {})
-    plan.setdefault(
-        "progress_rows",
-        build_sales_plan_progress(
-            plan,
-            actual_units_by_month=actual_units_by_month,
-            anchor_date=anchor_date,
-            actuals_source=actuals_source,
-        ),
+    progress_rows = build_sales_plan_progress(
+        plan,
+        actual_units_by_month=actual_units_by_month,
+        anchor_date=anchor_date,
+        actuals_source=actuals_source,
     )
-    plan.setdefault("actuals_source", actuals_source if actual_units_by_month else "unavailable")
+    if actual_units_by_month:
+        plan["progress_rows"] = progress_rows
+        plan["actuals_source"] = actuals_source
+    else:
+        plan.setdefault("progress_rows", progress_rows)
+        plan.setdefault("actuals_source", "unavailable")
     return {
         "source_status": {
             "mode": source,

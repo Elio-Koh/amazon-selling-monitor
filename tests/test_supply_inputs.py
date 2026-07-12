@@ -1,6 +1,7 @@
 from datetime import date
 
 from src.supply_inputs import (
+    build_operations_snapshot,
     build_sales_plan_progress,
     build_google_sheet_export_url,
     compute_stockout_risk,
@@ -111,6 +112,31 @@ def test_build_sales_plan_progress_keeps_targets_when_actuals_are_unavailable():
     assert july["completion_rate"] is None
     assert july["pace_gap_units"] is None
     assert july["status"] == "actual_unavailable"
+
+
+def test_build_operations_snapshot_recomputes_sheet_progress_when_actuals_arrive_later():
+    plan = parse_sales_plan_csv(SALES_PLAN_CSV, anchor_date=date(2026, 7, 11))
+    sheet_snapshot = build_operations_snapshot(
+        sales_plan=plan,
+        dashboard_inventory={"fba_fulfillable": 11789},
+        anchor_date=date(2026, 7, 11),
+        source="google_sheet",
+    )
+
+    snapshot = build_operations_snapshot(
+        sales_plan=sheet_snapshot["sales_plan"],
+        dashboard_inventory={"fba_fulfillable": 11789},
+        anchor_date=date(2026, 7, 11),
+        source="google_sheet",
+        actual_units_by_month={6: 1845, 7: 1787},
+        actuals_source="lingxing_store_sales_units",
+    )
+
+    july = snapshot["sales_plan"]["progress_rows"][1]
+    assert july["actual_units"] == 1787
+    assert july["completion_rate"] == 0.3574
+    assert july["status"] == "on_track"
+    assert snapshot["sales_plan"]["actuals_source"] == "lingxing_store_sales_units"
 
 
 def test_parse_procurement_extracts_summary_and_delivery_rows():
