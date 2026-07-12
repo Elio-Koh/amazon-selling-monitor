@@ -288,7 +288,7 @@ class LingxingAPIClient:
         }
         body = self._call("/api/lingxing/asin-all", payload)
         rows = _extract_rows(body)
-        return dict(rows[0]) if rows else {}
+        return _aggregate_child_detail_rows(rows) if rows else {}
 
     def fetch_child_units(self, asin: str, start_date: str, end_date: str) -> int:
         payload = {
@@ -425,6 +425,50 @@ def _dedupe_children(children: Iterable[Mapping[str, Any]], focus_asin: str) -> 
         seen.add(asin)
         rows.append(dict(child))
     return sorted(rows, key=lambda row: 0 if row.get("asin") == focus_asin else 1)
+
+
+def _aggregate_child_detail_rows(rows: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
+    materialized = [dict(row) for row in rows if isinstance(row, Mapping)]
+    if not materialized:
+        return {}
+
+    merged: Dict[str, Any] = {}
+    for row in materialized:
+        for key, value in row.items():
+            if value not in (None, "", [], {}):
+                merged[key] = value
+
+    sales_total = sum(
+        as_float(first_present(row, ("amount", "total_sale_total", "total_sales", "sales"))) or 0
+        for row in materialized
+    )
+    orders_total = sum(
+        as_int(first_present(row, ("order_items", "total_orders", "orders"))) or 0
+        for row in materialized
+    )
+    units_total = sum(
+        as_int(first_present(row, ("volume", "quantity", "total_units", "units"))) or 0
+        for row in materialized
+    )
+    spend_total = sum(_row_ad_spend(row) for row in materialized)
+    ad_sales_total = sum(
+        as_float(first_present(row, ("ad_sales_amount", "ads_sales", "ad_sales"))) or 0
+        for row in materialized
+    )
+
+    merged["amount"] = round(sales_total, 4)
+    merged["order_items"] = int(orders_total)
+    merged["volume"] = int(units_total)
+    merged["spend"] = round(spend_total, 4)
+    merged["ad_sales_amount"] = round(ad_sales_total, 4)
+    return merged
+
+
+def _row_ad_spend(row: Mapping[str, Any]) -> float:
+    spend = as_float(first_present(row, ("spend", "spends", "ads_spend", "ad_spend")))
+    if spend is not None:
+        return spend
+    return (as_float(row.get("ads_sp_cost")) or 0) + (as_float(row.get("shared_ads_sbv_cost")) or 0)
 
 
 def _variation_from_meta(meta: Mapping[str, Any], *, status: str) -> Dict[str, Any]:
