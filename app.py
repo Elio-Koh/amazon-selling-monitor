@@ -910,17 +910,6 @@ def market_context_render_data(data: Dict[str, Any], targets: Mapping[str, Any],
     )
 
 
-def _streamlit_fragment(run_every: str):
-    fragment = getattr(st, "__dict__", {}).get("fragment") or getattr(st, "__dict__", {}).get("experimental_fragment")
-    if callable(fragment):
-        return fragment(run_every=run_every)
-
-    def decorator(func):
-        return func
-
-    return decorator
-
-
 def inject_css() -> None:
     st.markdown(
         """
@@ -1428,7 +1417,6 @@ def render_all_ads(data: Dict[str, Any], summary: Dict[str, Any], currency: str)
     st.dataframe(_campaign_table(data["campaigns"]), use_container_width=True, hide_index=True)
 
 
-@_streamlit_fragment(run_every="2s")
 def render_market_context_tab(
     data: Dict[str, Any],
     summary: Dict[str, Any],

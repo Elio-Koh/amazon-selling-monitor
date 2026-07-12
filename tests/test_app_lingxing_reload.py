@@ -109,6 +109,28 @@ def import_app_with_fake_streamlit(monkeypatch):
     return importlib.import_module("app")
 
 
+def test_app_does_not_register_auto_refreshing_market_context_fragment(monkeypatch):
+    fake_streamlit = FakeStreamlit()
+    fragment_calls = []
+
+    def fake_fragment(**kwargs):
+        fragment_calls.append(kwargs)
+
+        def decorator(func):
+            return func
+
+        return decorator
+
+    fake_streamlit.fragment = fake_fragment
+    monkeypatch.setitem(sys.modules, "streamlit", fake_streamlit)
+    install_fake_cryptography_if_missing(monkeypatch)
+    sys.modules.pop("app", None)
+
+    importlib.import_module("app")
+
+    assert fragment_calls == []
+
+
 def install_fake_cryptography_if_missing(monkeypatch):
     if importlib.util.find_spec("cryptography") is not None:
         return
